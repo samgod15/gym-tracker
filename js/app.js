@@ -279,7 +279,7 @@ async function viewWorkout(id) {
     h('label', { class: 'field' }, h('span', null, 'Notes'),
       h('textarea', { rows: 3, placeholder: 'How it felt, machine settings…', oninput: (e) => { cw.notes = e.target.value; saveCurrent(); } }, cw.notes || '')),
     live
-      ? h('button', { class: 'btn danger-ghost block', onclick: discardWorkout }, 'Discard workout')
+      ? h('button', { class: 'btn danger-ghost block', onclick: () => discardWorkout() }, 'Discard workout')
       : h('button', { class: 'btn danger-ghost block', onclick: () => deleteWorkout(cw.id) }, 'Delete workout'));
   return body;
 }
