@@ -9,7 +9,7 @@ import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, re
 import * as install from './install.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.3.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -1093,9 +1093,15 @@ async function viewSettings() {
       toggle('Keep screen awake during workouts', S.settings.keepAwake, (v) => set({ keepAwake: v }),
         timer.wakeLockSupported() ? null : 'Not supported on this iOS version (needs iOS 18.4+). Set Auto-Lock to 5 min in iPhone Settings as a fallback.'),
       toggle('Beep when rest is over', S.settings.sound !== false, (v) => set({ sound: v }), 'The beep is muted when your iPhone is on silent. The bar and the overhead light also flash green.')),
-    h('div', { class: 'card stack' }, h('h3', null, 'Look'),
-      toggle('Animated background', S.settings.animatedBg !== false, (v) => { fx.setBackground(v); set({ animatedBg: v }); },
-        'The drifting chalk dust. Turn it off to save a little battery. It also stops when Reduce Motion is on in iPhone Settings.')),
+    h('div', { class: 'card stack' }, h('h3', null, 'Theme'),
+      h('div', { class: 'theme-grid', role: 'radiogroup', 'aria-label': 'Theme' }, Object.entries(fx.THEMES).map(([key, t]) => {
+        const on = (S.settings.theme || fx.DEFAULT_THEME) === key;
+        return h('button', { class: `theme-opt ${on ? 'on' : ''}`, role: 'radio', 'aria-checked': on ? 'true' : 'false',
+          onclick: async () => { fx.setTheme(key); await db.saveSettings({ theme: key }); await loadAll(); render(); } },
+          h('span', { class: `sw sw-${key}`, 'aria-hidden': 'true' }), h('span', { class: 'nm' }, t.label), on ? h('span', { class: 'tick', 'aria-hidden': 'true' }, '✓') : null);
+      })),
+      toggle('Moving background', S.settings.animatedBg !== false, (v) => { fx.setBackground(v); set({ animatedBg: v }); },
+        'Turn it off to save battery. It also holds still when Reduce Motion is on in iPhone Settings.')),
     h('div', { class: 'card stack' }, h('h3', null, 'Plates at your gym'),
       h('div', { class: 'chip-row' }, allPlates.map((p) => h('button', { class: `chip ${plateInv.includes(p) ? 'on' : ''}`, 'aria-pressed': plateInv.includes(p) ? 'true' : 'false',
         onclick: () => set({ plates: plateInv.includes(p) ? plateInv.filter((x) => x !== p) : [...plateInv, p].sort((a, b) => b - a) }) }, `${p} lb`))),
@@ -1134,7 +1140,7 @@ async function boot() {
     return;
   }
   db.requestPersistence();
-  fx.initBackground(S.settings.animatedBg !== false);
+  fx.initBackground(S.settings.animatedBg !== false, S.settings.theme || fx.DEFAULT_THEME);
   timer.onDone(() => fx.pulseLight('go'));
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => go(`#/${t.dataset.tab}`)));
   navStack.push(location.hash || '#/train');

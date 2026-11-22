@@ -20,10 +20,12 @@
   <title>Gym Tracker</title>
 </head>
 <body>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem('gt-theme') || 'aurora'; } catch (e) { document.documentElement.dataset.theme = 'aurora'; }</script>
   <div class="stage" aria-hidden="true">
     <div id="spotlight" class="spotlight"></div>
     <canvas id="dust"></canvas>
     <div class="floor"></div>
+    <div id="flash" class="flash"></div>
   </div>
   <div id="app">
     <header class="topbar">

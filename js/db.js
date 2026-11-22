@@ -150,6 +150,7 @@ export const DEFAULT_SETTINGS = {
   keepAwake: true,
   sound: true,
   animatedBg: true,
+  theme: 'aurora',
   updatedAt: 1,
 };
 
