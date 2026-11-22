@@ -144,6 +144,24 @@ export async function signUp(email, password) {
   await A.createUserWithEmailAndPassword(auth, email, password);
 }
 
+/** One button for everyone: sign in, or create the account if this email is new. */
+export async function connect(email, password) {
+  if (!email || !password) throw new Error('Enter your email and a password');
+  try {
+    await signIn(email, password);
+    return 'signed-in';
+  } catch (e) {
+    if (!['auth/invalid-credential', 'auth/user-not-found', 'auth/invalid-login-credentials'].includes(e?.code)) throw e;
+    try {
+      await signUp(email, password);
+      return 'created';
+    } catch (e2) {
+      if (e2?.code === 'auth/email-already-in-use') throw Object.assign(new Error('Wrong password for that email.'), { code: 'auth/wrong-password' });
+      throw e2;
+    }
+  }
+}
+
 export async function signOut() {
   if (!fb) { set({ user: null }); return; }
   await fb.A.signOut(fb.auth);
@@ -160,7 +178,7 @@ export function friendlyError(e) {
   const code = e?.code || '';
   const map = {
     'auth/invalid-credential': 'Wrong email or password.',
-    'auth/wrong-password': 'Wrong email or password.',
+    'auth/wrong-password': 'Wrong password for that email. Tap Forgot password if you need to reset it.',
     'auth/user-not-found': 'No account with that email — tap Create account.',
     'auth/email-already-in-use': 'That email already has an account — tap Sign in.',
     'auth/weak-password': 'Password needs at least 6 characters.',

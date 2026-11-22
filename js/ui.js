@@ -100,6 +100,14 @@ export function fmtDuration(ms) {
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
 }
 
+export function relTime(ms) {
+  const d = Date.now() - ms;
+  if (d < 45000) return 'just now';
+  if (d < 3600000) return `${Math.round(d / 60000)} min ago`;
+  if (d < 86400000) return `${Math.round(d / 3600000)} h ago`;
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 export function fmtClock(sec) {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;

@@ -5,10 +5,11 @@ import * as sync from './sync.js';
 import { seedIfNeeded } from './seed.js';
 import * as fx from './fx.js';
 import { lineChart } from './charts.js';
-import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce } from './ui.js';
+import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, relTime } from './ui.js';
+import * as install from './install.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -63,6 +64,15 @@ const app = document.getElementById('app');
 const main = document.getElementById('main');
 const titleEl = document.getElementById('title');
 const headRight = document.getElementById('head-right');
+const backBtn = document.getElementById('back');
+const ROOT_TABS = ['train', 'history', 'progress', 'body'];
+const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress' };
+const navStack = []; // hashes visited inside the app, so Back can return to where you came from
+
+backBtn.addEventListener('click', () => {
+  if (navStack.length > 1) history.back();
+  else location.replace(PARENT[route().name] || '#/train');
+});
 
 function route() {
   const parts = (location.hash.replace(/^#\/?/, '') || 'train').split('/');
@@ -76,7 +86,8 @@ async function render() {
   const r = route();
   clearInterval(elapsedTick);
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tabFor(r.name)));
-  fill(headRight, syncBadge());
+  fill(headRight, syncButton());
+  backBtn.hidden = ROOT_TABS.includes(r.name);
   app.dataset.route = r.name;
   const views = {
     train: viewTrain, workout: viewWorkout, routine: viewRoutine, history: viewHistory, session: viewSession,
@@ -119,18 +130,117 @@ function setTitle(t) {
 }
 
 // ---------------------------------------------------------------- sync badge
-function syncBadge() {
+const CLOUD = '<path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6 6 0 0 0 6.2 11.2 3.7 3.7 0 0 0 7 18.5Z"/>';
+function cloudIcon(kind) {
+  const extra = {
+    ok: '<path d="m9.2 14.2 2 2 3.8-3.9"/>',
+    busy: '<path class="spin-arrows" d="M14.7 12.2a2.9 2.9 0 1 1-.9-2.1M14.9 9.2v1.9h-1.9"/>',
+    err: '<path d="M12 10.2v3M12 15.6v.1"/>',
+    off: '<path d="m9.5 11.5 5 5M14.5 11.5l-5 5"/>',
+    setup: '<path d="M12 11v5M9.5 13.5h5"/>',
+  }[kind] || '';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('class', 'sync-ico');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.innerHTML = CLOUD + extra; // static markup only
+  return svg;
+}
+
+function syncState() {
   const st = sync.status();
-  let cls = 'off';
-  let label = 'Sync off';
-  if (st.user) {
-    if (st.state === 'syncing') { cls = 'busy'; label = 'Syncing'; }
-    else if (st.state === 'error') { cls = 'err'; label = 'Sync error'; }
-    else if (st.state === 'offline') { cls = 'off'; label = 'Offline'; }
-    else { cls = 'ok'; label = 'Synced'; }
-  }
-  return h('button', { class: `sync-badge ${cls}`, onclick: () => go('#/settings'), 'aria-label': `${label}. Open settings.` },
-    h('span', { class: 'dot', 'aria-hidden': 'true' }), label);
+  if (!st.configured) return { kind: 'off', label: 'Sync off' };
+  if (!st.user) return { kind: 'setup', label: 'Turn on sync' };
+  if (st.state === 'syncing') return { kind: 'busy', label: 'Syncing' };
+  if (st.state === 'error') return { kind: 'err', label: 'Sync failed' };
+  if (st.state === 'offline') return { kind: 'off', label: 'Offline' };
+  return { kind: 'ok', label: 'Synced' };
+}
+
+/** Header button: one tap syncs when you're signed in; otherwise opens the sync sheet. */
+function syncButton() {
+  const { kind, label } = syncState();
+  return h('button', { class: `sync-badge ${kind}`, onclick: onSyncTap, 'aria-label': sync.status().user ? `${label}. Tap to sync now.` : `${label}. Tap to set up sync.` },
+    cloudIcon(kind), label);
+}
+
+async function onSyncTap() {
+  const st = sync.status();
+  if (!st.user) { openSyncSheet(); return; }
+  if (!navigator.onLine) { toast('No connection — it will sync when you’re back online'); return; }
+  if (st.state === 'syncing') return;
+  await sync.syncNow();
+  const after = sync.status();
+  if (after.state === 'error') toast(after.error || 'Sync failed', 'err');
+  else toast('Synced');
+}
+
+function openSyncSheet() { sheet(syncPanel(), { title: 'Cloud sync' }); }
+
+/** Sync controls used in the sheet and in Settings. Redraws itself when sync status changes. */
+function syncPanel() {
+  const wrap = h('div', { class: 'stack sync-panel' });
+  let email = '';
+  let pw = '';
+  let mode = '';
+  let busy = false;
+  db.meta('lastEmail', '').then((v) => { if (!email && v) { email = v; const i = wrap.querySelector('input[type=email]'); if (i && !i.value) i.value = v; } });
+
+  const draw = () => {
+    const st = sync.status();
+    const m = !st.configured ? 'na' : st.user ? 'in' : 'out';
+    if (m === 'out' && mode === 'out' && !busy) return; // keep what's being typed
+    mode = m;
+    if (m === 'na') {
+      fill(wrap,
+        h('div', { class: 'sync-status off' }, cloudIcon('off'), h('div', null, h('strong', null, 'Sync isn’t connected yet'), h('div', { class: 'muted small' }, 'Your workouts are saved on this phone.'))),
+        h('p', { class: 'muted small' }, 'Until sync is on, export a backup file now and then so a lost phone doesn’t mean a lost log.'),
+        h('button', { class: 'btn primary block', onclick: exportBackup }, 'Export backup'));
+      return;
+    }
+    if (m === 'in') {
+      const k = syncState().kind;
+      const line = {
+        busy: ['Syncing…', 'Sending and fetching your latest workouts.'],
+        err: ['Couldn’t sync', st.error || 'Try again in a moment.'],
+        off: ['Offline', 'Everything is saved on this phone and syncs when you’re back online.'],
+        ok: [st.lastSync ? `Synced ${relTime(st.lastSync)}` : 'Ready to sync', 'Syncs by itself after every change and when you open the app.'],
+      }[k] || ['Ready', ''];
+      fill(wrap,
+        h('div', { class: `sync-status ${k}` }, cloudIcon(k), h('div', null, h('strong', null, line[0]), h('div', { class: 'muted small' }, line[1]))),
+        h('button', { class: 'btn primary block big-cta', disabled: k === 'busy' ? true : null, onclick: onSyncTap }, k === 'busy' ? 'Syncing…' : 'Sync now'),
+        h('div', { class: 'row between' },
+          h('span', { class: 'muted small' }, 'Signed in as ', h('strong', null, st.user.email)),
+          h('button', { class: 'btn small ghost', onclick: async () => { await sync.signOut(); toast('Signed out — your log stays on this phone'); } }, 'Sign out')));
+      return;
+    }
+    const emailIn = h('input', { type: 'email', autocomplete: 'username', inputmode: 'email', placeholder: 'Email', 'aria-label': 'Email', value: email, oninput: (e) => (email = e.target.value) });
+    const pwIn = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Password (6+ characters)', 'aria-label': 'Password', value: pw, oninput: (e) => (pw = e.target.value) });
+    const go1 = async () => {
+      if (busy) return;
+      busy = true; draw();
+      try {
+        const result = await sync.connect(email.trim(), pw);
+        await db.setMeta('lastEmail', email.trim());
+        pw = '';
+        toast(result === 'created' ? 'Account created — sync is on' : 'Signed in — syncing your log');
+      } catch (e) {
+        toast(sync.friendlyError(e), 'err');
+      } finally {
+        busy = false; mode = ''; draw();
+      }
+    };
+    pwIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') go1(); });
+    fill(wrap,
+      h('div', { class: 'sync-status' }, cloudIcon('setup'), h('div', null, h('strong', null, 'Keep your log safe'), h('div', { class: 'muted small' }, 'Back it up to the cloud and get it on any phone.'))),
+      emailIn, pwIn,
+      h('button', { class: 'btn primary block big-cta', disabled: busy ? true : null, onclick: go1 }, busy ? 'Connecting…' : 'Turn on sync'),
+      h('p', { class: 'muted small' }, 'New here? This creates your account. On another phone, enter the same email and password and everything comes back.'),
+      h('button', { class: 'link', onclick: async () => { try { await sync.resetPassword(email.trim()); toast('Password reset email sent'); } catch (e) { toast(sync.friendlyError(e), 'err'); } } }, 'Forgot password?'));
+  };
+  const unsub = sync.onStatus(() => { if (!wrap.isConnected) { unsub(); return; } draw(); });
+  draw();
+  return wrap;
 }
 
 // ================================================================= TRAIN
@@ -141,6 +251,7 @@ async function viewTrain() {
   const lastExport = await db.meta('lastExport', 0);
   const needsBackup = !sync.status().user && realWorkouts().length > 0 && Date.now() - lastExport > 7 * 86400000;
   const next = nextRoutine();
+  const showInstall = !install.isStandalone() && !(await db.meta('installDismissed', false));
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
   let hero = null;
@@ -166,6 +277,11 @@ async function viewTrain() {
       h('div', { class: 'row gap' },
         h('button', { class: 'btn small', onclick: exportBackup }, 'Export now'),
         h('button', { class: 'btn small ghost', onclick: () => go('#/settings') }, 'Set up sync'))) : null,
+    showInstall ? h('div', { class: 'card install-card' },
+      h('div', { class: 'install-text' }, h('strong', null, 'Put it on your home screen'), h('div', { class: 'muted small' }, 'Opens full screen, like an app, and works with no signal.')),
+      h('div', { class: 'row gap' },
+        h('button', { class: 'btn primary small', onclick: () => install.showInstallGuide() }, 'Show me how'),
+        h('button', { class: 'icon-btn', 'aria-label': 'Hide this tip', onclick: async () => { await db.setMeta('installDismissed', true); render(); } }, '✕'))) : null,
     hero,
     h('div', { class: 'section-head' }, h('h2', null, 'Routines'),
       h('button', { class: 'btn small ghost', onclick: () => go('#/routine/new') }, '+ New')),
@@ -953,45 +1069,19 @@ function importBackup() {
 
 async function viewSettings() {
   setTitle('Settings');
-  const st = sync.status();
   const lastExport = await db.meta('lastExport', 0);
   const set = async (patch) => { await db.saveSettings(patch); await loadAll(); render(); };
-
-  // --- sync card
-  let syncCard;
-  if (!st.configured) {
-    syncCard = h('div', { class: 'card stack' }, h('h3', null, 'Cloud sync'),
-      h('p', { class: 'muted' }, 'Not set up yet. Paste your Firebase config into js/firebase-config.js (README step 3), upload it to GitHub, then reopen the app.'));
-  } else if (st.user) {
-    syncCard = h('div', { class: 'card stack' }, h('h3', null, 'Cloud sync'),
-      h('div', null, 'Signed in as ', h('strong', null, st.user.email)),
-      h('div', { class: 'muted small' }, st.lastSync ? `Last synced ${new Date(st.lastSync).toLocaleString()}` : 'Not synced yet'),
-      st.error ? h('div', { class: 'banner err small' }, st.error) : null,
-      h('div', { class: 'row gap' },
-        h('button', { class: 'btn primary grow', onclick: async () => { await sync.syncNow(); await loadAll(); render(); } }, st.state === 'syncing' ? 'Syncing…' : 'Sync now'),
-        h('button', { class: 'btn ghost grow', onclick: async () => { await sync.signOut(); render(); } }, 'Sign out')));
-  } else {
-    const email = h('input', { type: 'email', autocomplete: 'username', placeholder: 'Email', 'aria-label': 'Email', value: (await db.meta('lastEmail', '')) || '' });
-    const pw = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Password (6+ characters)', 'aria-label': 'Password' });
-    const run = async (fn) => {
-      try { await fn(email.value.trim(), pw.value); await db.setMeta('lastEmail', email.value.trim()); toast('Signed in — syncing'); await loadAll(); render(); }
-      catch (e) { toast(sync.friendlyError(e), 'err'); }
-    };
-    syncCard = h('div', { class: 'card stack' }, h('h3', null, 'Cloud sync'),
-      h('p', { class: 'muted small' }, 'Your log is saved on this phone first. Signing in mirrors it to your Firebase database so it survives a lost phone.'),
-      st.state === 'error' && st.error ? h('div', { class: 'banner err small' }, st.error) : null,
-      email, pw,
-      h('div', { class: 'row gap' },
-        h('button', { class: 'btn primary grow', onclick: () => run(sync.signIn) }, 'Sign in'),
-        h('button', { class: 'btn ghost grow', onclick: () => run(sync.signUp) }, 'Create account')),
-      h('button', { class: 'link', onclick: async () => { try { await sync.resetPassword(email.value.trim()); toast('Reset email sent'); } catch (e) { toast(sync.friendlyError(e), 'err'); } } }, 'Forgot password'));
-  }
 
   const plateInv = S.settings.plates || [];
   const allPlates = [...new Set([55, 45, 35, 25, 10, 5, 2.5, 1.25, ...plateInv])].sort((a, b) => b - a);
 
   return h('div', { class: 'page stack' },
-    syncCard,
+    h('div', { class: 'card stack' }, h('h3', null, 'Cloud sync'), syncPanel()),
+    h('div', { class: 'card stack' }, h('h3', null, 'Home Screen'),
+      install.isStandalone()
+        ? h('p', { class: 'muted small' }, 'You’re using the Home Screen app. It opens full screen and works offline.')
+        : h('p', { class: 'muted small' }, 'Put Gym Tracker on your home screen so it opens like an app, full screen and offline.'),
+      install.isStandalone() ? null : h('button', { class: 'btn primary block', onclick: () => install.showInstallGuide() }, 'Add to Home Screen')),
     h('div', { class: 'card stack' }, h('h3', null, 'Backup file'),
       h('p', { class: 'muted small' }, lastExport ? `Last export ${new Date(lastExport).toLocaleDateString()}` : 'Never exported'),
       h('div', { class: 'row gap' },
@@ -1010,8 +1100,6 @@ async function viewSettings() {
       h('div', { class: 'chip-row' }, allPlates.map((p) => h('button', { class: `chip ${plateInv.includes(p) ? 'on' : ''}`, 'aria-pressed': plateInv.includes(p) ? 'true' : 'false',
         onclick: () => set({ plates: plateInv.includes(p) ? plateInv.filter((x) => x !== p) : [...plateInv, p].sort((a, b) => b - a) }) }, `${p} lb`))),
       settingNum('Barbell weight (lb)', S.settings.barWeight, (v) => set({ barWeight: v }))),
-    h('div', { class: 'card stack' }, h('h3', null, 'Install on your iPhone'),
-      h('p', { class: 'muted small' }, 'In Safari: Share → Add to Home Screen → open from the new icon. Data saved in Safari and in the Home Screen app are separate on iOS, so log from the icon.')),
     h('div', { class: 'card stack' }, h('h3', null, 'Danger zone'),
       h('button', { class: 'btn danger-ghost block', onclick: async () => {
         const ok = await confirmSheet('Erase everything on this phone? If sync is on, signing back in restores it; otherwise only a backup file can.', { ok: 'Erase', danger: true });
@@ -1049,20 +1137,21 @@ async function boot() {
   fx.initBackground(S.settings.animatedBg !== false);
   timer.onDone(() => fx.pulseLight('go'));
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => go(`#/${t.dataset.tab}`)));
+  navStack.push(location.hash || '#/train');
   window.addEventListener('hashchange', () => {
+    const hsh = location.hash || '#/train';
+    if (navStack.length > 1 && navStack[navStack.length - 2] === hsh) navStack.pop();
+    else navStack.push(hsh);
+    if (navStack.length > 50) navStack.splice(0, navStack.length - 50);
     if (S.current && !route().name.startsWith('workout')) { flushCurrent(); S.current = null; }
     render();
   });
-  let prevSig = '';
-  sync.onStatus(async (st, changed) => {
-    const sig = `${st.configured}|${st.user?.uid || ''}`;
-    const authChanged = sig !== prevSig;
-    prevSig = sig;
+  sync.onStatus(async (_st, changed) => {
     if (changed) await loadAll();
-    const onSettings = route().name === 'settings';
-    // Re-render when data arrived, or when the Settings page needs to show new sync/sign-in state.
-    if ((changed && !S.current) || (onSettings && (authChanged || st.user))) render();
-    else fill(headRight, syncBadge());
+    // New data from another phone: redraw (but never under a workout you're logging). The sync
+    // panels redraw themselves, so typing in the sign-in form is never wiped.
+    if (changed && !S.current) render();
+    else fill(headRight, syncButton());
   });
   db.onChange(() => sync.schedule());
   await render();
