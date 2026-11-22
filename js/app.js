@@ -3,11 +3,12 @@ import * as calc from './calc.js';
 import * as timer from './timer.js';
 import * as sync from './sync.js';
 import { seedIfNeeded } from './seed.js';
+import * as fx from './fx.js';
 import { lineChart } from './charts.js';
 import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce } from './ui.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -82,15 +83,40 @@ async function render() {
     progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings,
   };
   const fn = views[r.name] || viewTrain;
-  const keep = r.name === lastRoute.name && r.id === lastRoute.id ? main.scrollTop : 0;
+  const same = r.name === lastRoute.name && r.id === lastRoute.id;
+  const keep = same ? main.scrollTop : 0;
   const node = await fn(r.id);
+  if (!same) node.classList?.add('enter'); // one entrance per screen, not on every re-render
   fill(main, node);
   main.scrollTop = keep;
   lastRoute = r;
+  afterRender();
+}
+
+/** One-shot effects for the set that was just checked off (row flash, PR stamp + chalk burst). */
+function afterRender() {
+  const pr = S.justPr;
+  S.justDone = null;
+  S.justPr = null;
+  if (!pr) return;
+  const row = document.querySelector(`[data-set="${pr}"]`);
+  const btn = row?.querySelector('.check');
+  if (btn) {
+    const b = btn.getBoundingClientRect();
+    fx.chalkBurst(b.left + b.width / 2, b.top + b.height / 2);
+  }
+  fx.pulseLight('pr');
 }
 let lastRoute = {};
 const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress' }[name] || name);
-const setTitle = (t) => (titleEl.textContent = t);
+function setTitle(t) {
+  const span = titleEl.querySelector('.title-text');
+  if (span.textContent === t) return;
+  span.textContent = t;
+  span.classList.remove('enter');
+  void span.offsetWidth;
+  span.classList.add('enter');
+}
 
 // ---------------------------------------------------------------- sync badge
 function syncBadge() {
@@ -114,6 +140,25 @@ async function viewTrain() {
   const lastDone = (rid) => S.workouts.find((w) => w.endedAt && w.routineId === rid);
   const lastExport = await db.meta('lastExport', 0);
   const needsBackup = !sync.status().user && realWorkouts().length > 0 && Date.now() - lastExport > 7 * 86400000;
+  const next = nextRoutine();
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+  let hero = null;
+  if (active) {
+    const done = active.entries.reduce((n, e) => n + e.sets.filter((x) => x.done).length, 0);
+    hero = h('div', { class: 'card hero live' },
+      h('div', { class: 'eyebrow' }, h('span', { class: 'live-dot', 'aria-hidden': 'true' }), 'Workout in progress'),
+      h('div', { class: 'hero-name' }, active.name || 'Workout'),
+      h('div', { class: 'hero-meta' }, `Started ${fmtDuration(Date.now() - active.startedAt)} ago, ${plural(done, 'set')} logged`),
+      h('button', { class: 'btn primary block', onclick: () => go(`#/workout/${active.id}`) }, 'Resume workout'));
+  } else if (next) {
+    const last = lastDone(next.id);
+    hero = h('div', { class: 'card hero' },
+      h('div', { class: 'eyebrow' }, 'Up next'),
+      h('div', { class: 'hero-name' }, next.name),
+      h('div', { class: 'hero-meta' }, `${plural(next.items.length, 'exercise')}${last ? `, last done ${fmtDate(last.startedAt, { weekday: 'short', month: 'short', day: 'numeric' })}` : ''}`),
+      h('button', { class: 'btn primary block', onclick: () => startFromRoutine(next) }, `Start ${next.name}`));
+  }
 
   return h('div', { class: 'page stack' },
     needsBackup ? h('div', { class: 'banner warn' },
@@ -121,13 +166,7 @@ async function viewTrain() {
       h('div', { class: 'row gap' },
         h('button', { class: 'btn small', onclick: exportBackup }, 'Export now'),
         h('button', { class: 'btn small ghost', onclick: () => go('#/settings') }, 'Set up sync'))) : null,
-
-    active ? h('div', { class: 'card active-card' },
-      h('div', { class: 'eyebrow' }, 'In progress'),
-      h('div', { class: 'card-title' }, active.name || 'Workout'),
-      h('div', { class: 'muted' }, `Started ${fmtDuration(Date.now() - active.startedAt)} ago · ${active.entries.length} exercises`),
-      h('button', { class: 'btn primary block', onclick: () => go(`#/workout/${active.id}`) }, 'Resume workout')) : null,
-
+    hero,
     h('div', { class: 'section-head' }, h('h2', null, 'Routines'),
       h('button', { class: 'btn small ghost', onclick: () => go('#/routine/new') }, '+ New')),
     S.routines.length ? S.routines.map((rt) => {
@@ -135,14 +174,22 @@ async function viewTrain() {
       return h('div', { class: 'card routine-card' },
         h('div', { class: 'routine-main', onclick: () => startFromRoutine(rt) },
           h('div', { class: 'card-title' }, rt.name),
-          h('div', { class: 'muted small' }, rt.items.map((i) => exById(i.exerciseId).name).join(' · ')),
-          h('div', { class: 'muted small' }, last ? `Last: ${fmtDate(last.startedAt)}` : 'Not done yet')),
+          h('div', { class: 'muted small' }, rt.items.map((i) => exById(i.exerciseId).name).join(', ')),
+          h('div', { class: 'muted small' }, last ? `Last done ${fmtDate(last.startedAt)}` : 'Not done yet')),
         h('div', { class: 'routine-actions' },
           h('button', { class: 'btn primary small', onclick: () => startFromRoutine(rt) }, 'Start'),
           h('button', { class: 'icon-btn', 'aria-label': `Edit ${rt.name}`, onclick: () => go(`#/routine/${rt.id}`) }, '✎')));
-    }) : h('p', { class: 'muted' }, 'No routines yet.'),
-
+    }) : h('p', { class: 'muted' }, 'No routines yet. Tap + New to build one.'),
     h('button', { class: 'btn ghost block', onclick: () => startWorkout({ name: 'Workout', routineId: null, entries: [] }) }, 'Start empty workout'));
+}
+
+/** The routine after the one you did most recently, in your routine order (wraps around). */
+function nextRoutine() {
+  if (!S.routines.length) return null;
+  const lastW = S.workouts.find((w) => w.endedAt && w.routineId && S.routines.some((r) => r.id === w.routineId));
+  if (!lastW) return S.routines[0];
+  const i = S.routines.findIndex((r) => r.id === lastW.routineId);
+  return S.routines[(i + 1) % S.routines.length];
 }
 
 async function startFromRoutine(rt) {
@@ -331,7 +378,9 @@ function setRow(ex, entry, ei, s, si, badge, prev) {
     onclick: () => toggleDone(ex, entry, ei, s, si),
   }, '✓');
 
-  return h('div', { class: `set-grid ${s.done ? 'done' : ''} ${s.type} ${isCardio ? 'cardio' : ''}` },
+  const fresh = S.justDone === s.id ? ' just-done' : '';
+  const freshPr = S.justPr === s.id ? ' just-pr' : '';
+  return h('div', { class: `set-grid ${s.done ? 'done' : ''} ${s.type} ${isCardio ? 'cardio' : ''}${fresh}${freshPr}`, 'data-set': s.id },
     h('button', { class: `badge ${s.type}`, 'aria-label': `Set ${badge}, options`, onclick: () => setMenu(ex, entry, s, si) }, badge),
     loadCell, repsCell, rirCell, done,
     s.pr?.length ? h('span', { class: 'pr-tag', title: `PR: ${s.pr.join(', ')}` }, 'PR') : null);
@@ -358,6 +407,7 @@ function toggleDone(ex, entry, ei, s, si) {
   if ((ex.loadType === 'total' || ex.loadType === 'dumbbell') && s.weight === null) { toast('Enter the weight first'); return; }
   s.done = true;
   s.doneAt = Date.now();
+  S.justDone = s.id;
 
   // PR check vs previous sessions + earlier sets today
   const hist = historyFor(entry.exerciseId, cw.id).map((r) => calc.sessionBest(ex, r.entry));
@@ -366,9 +416,10 @@ function toggleDone(ex, entry, ei, s, si) {
   cw.entries.forEach((e2, j) => { if (j !== ei && e2.exerciseId === entry.exerciseId) hist.push(calc.sessionBest(ex, e2)); });
   s.pr = calc.prsForSet(ex, s, hist);
   if (s.pr.length) {
+    S.justPr = s.id;
     const L = calc.setLoad(ex, s);
     const est = calc.e1rm(L.value, s.reps);
-    toast(s.pr.includes('e1RM') && est ? `New PR · est. 1RM ${calc.fmtNum(est)} ${L.unit === 'lb' ? 'lb' : L.unit}` : `New PR · ${s.pr.join(' + ')}`, 'pr');
+    toast(s.pr.includes('e1RM') && est ? `New PR! Est. 1RM ${calc.fmtNum(est)} ${L.unit === 'lb' ? 'lb' : L.unit}` : `New PR! Most ${s.pr.join(' + ')}`, 'pr');
   }
 
   const d = calc.restDecision(cw.entries, ei, si);
@@ -496,6 +547,11 @@ async function finishWorkout() {
     summary.prs.length ? h('div', { class: 'stack' }, h('h3', null, `${summary.prs.length} PR${summary.prs.length > 1 ? 's' : ''}`),
       summary.prs.map((p) => h('div', { class: 'pr-line' }, h('span', { class: 'pr-tag' }, 'PR'), p))) : h('p', { class: 'muted' }, 'No PRs this time.')),
   { title: `${cw.name} done` });
+  document.querySelectorAll('.summary .stat-val').forEach((el) => {
+    const n = Number(el.textContent.replace(/,/g, ''));
+    if (Number.isFinite(n) && n > 0) fx.countUp(el, n);
+  });
+  if (summary.prs.length) fx.pulseLight('pr');
 }
 
 function summarize(w) {
@@ -554,7 +610,7 @@ function pickExercise(onPick) {
       const matches = sortedExercises().filter((e) => !term || e.name.toLowerCase().includes(term) || (e.muscle || '').toLowerCase().includes(term));
       fill(list, 
         ...matches.map((e) => h('button', { class: 'pick-item', onclick: () => { close(); onPick(e); } },
-          h('span', null, e.name), h('span', { class: 'muted small' }, [e.muscle, calc.LOAD_TYPES[e.loadType]?.label].filter(Boolean).join(' · ')))),
+          h('span', null, e.name), h('span', { class: 'muted small' }, [e.muscle, calc.LOAD_TYPES[e.loadType]?.label].filter(Boolean).join(', ')))),
         term && !matches.some((m) => m.name.toLowerCase() === term)
           ? h('button', { class: 'pick-item create', onclick: () => { close(); exerciseForm({ name: q.value.trim() }, (ex) => onPick(ex)); } }, `+ Create “${q.value.trim()}”`)
           : null);
@@ -667,7 +723,7 @@ async function viewHistory() {
     const sm = summarize(w);
     items.push(h('button', { class: 'card history-card', onclick: () => go(`#/session/${w.id}`) },
       h('div', { class: 'row between' }, h('span', { class: 'card-title' }, w.name || 'Workout'), h('span', { class: 'muted small' }, fmtDate(w.startedAt))),
-      h('div', { class: 'muted small' }, `${fmtDuration(w.endedAt - w.startedAt)} · ${sm.sets} sets${sm.volume ? ` · ${Math.round(sm.volume).toLocaleString()} lb` : ''}`),
+      h('div', { class: 'muted small' }, `${fmtDuration(w.endedAt - w.startedAt)}, ${sm.sets} sets${sm.volume ? `, ${Math.round(sm.volume).toLocaleString()} lb moved` : ''}`),
       sm.prs.length ? h('div', { class: 'small' }, h('span', { class: 'pr-tag' }, 'PR'), ` ${sm.prs.length} personal record${sm.prs.length > 1 ? 's' : ''}`) : null));
   }
   return h('div', { class: 'page stack' }, items);
@@ -740,7 +796,7 @@ async function viewProgress() {
         const best = Math.max(...sr.points.map((p) => p.y));
         const delta = last - first;
         return h('button', { class: 'card progress-row', onclick: () => go(`#/exercise/${ex.id}`) },
-          h('div', null, h('div', { class: 'card-title' }, ex.name), h('div', { class: 'muted small' }, `Last ${fmtDate(lastAt, { month: 'short', day: 'numeric' })} · ${sr.points.length} session${sr.points.length > 1 ? 's' : ''}`)),
+          h('div', null, h('div', { class: 'card-title' }, ex.name), h('div', { class: 'muted small' }, `Last ${fmtDate(lastAt, { month: 'short', day: 'numeric' })}, ${sr.points.length} session${sr.points.length > 1 ? 's' : ''}`)),
           h('div', { class: 'progress-num' },
             h('div', { class: 'big-num' }, `${calc.fmtNum(best)}`, h('span', { class: 'unit' }, ` ${sr.unit}`)),
             h('div', { class: `small ${delta > 0 ? 'up' : 'muted'}` }, sr.points.length > 1 ? `${delta > 0 ? '▲ +' : delta < 0 ? '▼ −' : '± '}${calc.fmtNum(Math.round(Math.abs(delta) * 10) / 10)} since first` : sr.metric.key === 'e1rm' ? 'best est. 1RM' : 'best')));
@@ -775,12 +831,12 @@ async function viewExercise(id) {
   }
   const rec = (label, r, valueText) => r ? h('div', { class: 'record' },
     h('div', { class: 'stat-label' }, label), h('div', { class: 'stat-val' }, valueText),
-    h('div', { class: 'muted small' }, `${calc.formatSet(ex, r.s)} · ${fmtDate(r.at, { month: 'short', day: 'numeric', year: 'numeric' })}`)) : null;
+    h('div', { class: 'muted small' }, `${calc.formatSet(ex, r.s)} on ${fmtDate(r.at, { month: 'short', day: 'numeric', year: 'numeric' })}`)) : null;
 
   const isCardio = ex.loadType === 'cardio';
   return h('div', { class: 'page stack' },
     h('div', { class: 'row between' },
-      h('div', null, h('h2', { class: 'big-title' }, ex.name), h('div', { class: 'muted small' }, [ex.muscle, calc.LOAD_TYPES[ex.loadType]?.label, ex.loadType === 'plates' ? `base ${calc.fmtNum(ex.baseWeight || 0)} lb` : null, ex.loadType === 'stack' && ex.lbsPerPlate ? `${ex.lbsPerPlate} lb/plate` : null].filter(Boolean).join(' · '))),
+      h('div', null, h('h2', { class: 'big-title' }, ex.name), h('div', { class: 'muted small' }, [ex.muscle, calc.LOAD_TYPES[ex.loadType]?.label, ex.loadType === 'plates' ? `base ${calc.fmtNum(ex.baseWeight || 0)} lb` : null, ex.loadType === 'stack' && ex.lbsPerPlate ? `${ex.lbsPerPlate} lb/plate` : null].filter(Boolean).join(', '))),
       h('button', { class: 'btn small ghost', onclick: () => exerciseForm(structuredClone(ex), () => render()) }, 'Edit')),
     ex.notes ? h('p', { class: 'muted pre' }, ex.notes) : null,
     h('div', { class: 'card' },
@@ -946,7 +1002,10 @@ async function viewSettings() {
       settingNum('Warm-up rest (seconds)', S.settings.warmupRest, (v) => set({ warmupRest: v })),
       toggle('Keep screen awake during workouts', S.settings.keepAwake, (v) => set({ keepAwake: v }),
         timer.wakeLockSupported() ? null : 'Not supported on this iOS version (needs iOS 18.4+). Set Auto-Lock to 5 min in iPhone Settings as a fallback.'),
-      toggle('Beep when rest is over', S.settings.sound !== false, (v) => set({ sound: v }), 'The beep is muted when your iPhone is on silent. The bar also flashes green.')),
+      toggle('Beep when rest is over', S.settings.sound !== false, (v) => set({ sound: v }), 'The beep is muted when your iPhone is on silent. The bar and the overhead light also flash green.')),
+    h('div', { class: 'card stack' }, h('h3', null, 'Look'),
+      toggle('Animated background', S.settings.animatedBg !== false, (v) => { fx.setBackground(v); set({ animatedBg: v }); },
+        'The drifting chalk dust. Turn it off to save a little battery. It also stops when Reduce Motion is on in iPhone Settings.')),
     h('div', { class: 'card stack' }, h('h3', null, 'Plates at your gym'),
       h('div', { class: 'chip-row' }, allPlates.map((p) => h('button', { class: `chip ${plateInv.includes(p) ? 'on' : ''}`, 'aria-pressed': plateInv.includes(p) ? 'true' : 'false',
         onclick: () => set({ plates: plateInv.includes(p) ? plateInv.filter((x) => x !== p) : [...plateInv, p].sort((a, b) => b - a) }) }, `${p} lb`))),
@@ -987,6 +1046,8 @@ async function boot() {
     return;
   }
   db.requestPersistence();
+  fx.initBackground(S.settings.animatedBg !== false);
+  timer.onDone(() => fx.pulseLight('go'));
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => go(`#/${t.dataset.tab}`)));
   window.addEventListener('hashchange', () => {
     if (S.current && !route().name.startsWith('workout')) { flushCurrent(); S.current = null; }

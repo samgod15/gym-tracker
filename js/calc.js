@@ -69,7 +69,7 @@ export function isCompletedWorkSet(set) {
   return !!set && set.done && (set.type || 'work') === 'work';
 }
 
-/** Human label for a set's load, e.g. "45+25 /side · 140 lb" or "3 plates". */
+/** Human label for a set's load, e.g. "140 lb (45+25/side)" or "3 plates". */
 export function formatLoad(exercise, set) {
   const t = exercise?.loadType || 'total';
   const L = setLoad(exercise, set);
@@ -77,17 +77,17 @@ export function formatLoad(exercise, set) {
     const parts = [];
     if (num(set.minutes) !== null) parts.push(`${num(set.minutes)} min`);
     if (num(set.hr) !== null) parts.push(`${num(set.hr)} bpm`);
-    return parts.join(' · ') || '—';
+    return parts.join(', ') || '—';
   }
   if (t === 'plates') {
     const p = (set.plates || []).filter((x) => Number(x));
     const side = p.length ? p.join('+') : '0';
-    return L.value === null ? '—' : `${side} /side · ${fmtNum(L.value)} lb`;
+    return L.value === null ? '—' : `${fmtNum(L.value)} lb (${side}/side)`;
   }
   if (t === 'stack') {
     if (num(set.count) === null) return '—';
     const c = num(set.count);
-    return L.unit === 'lb' ? `${fmtNum(c)} pl · ${fmtNum(L.value)} lb` : `${fmtNum(c)} ${c === 1 ? 'plate' : 'plates'}`;
+    return L.unit === 'lb' ? `${fmtNum(L.value)} lb (${fmtNum(c)} pl)` : `${fmtNum(c)} ${c === 1 ? 'plate' : 'plates'}`;
   }
   if (t === 'bodyweight') return L.value ? `BW +${fmtNum(L.value)}` : 'BW';
   if (t === 'dumbbell') return L.value === null ? '—' : `${fmtNum(L.value)} lb ea`;

@@ -149,6 +149,7 @@ export const DEFAULT_SETTINGS = {
   warmupRest: 60,
   keepAwake: true,
   sound: true,
+  animatedBg: true,
   updatedAt: 1,
 };
 

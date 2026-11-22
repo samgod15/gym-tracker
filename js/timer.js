@@ -8,6 +8,10 @@ let tick = null;
 let el = null;
 let soundOn = true;
 let firedFor = null;
+let doneHook = null;
+
+/** Called once each time a rest countdown reaches zero. */
+export function onDone(fn) { doneHook = fn; }
 
 /** Must be called from a tap: iOS only allows audio that was unlocked by a user gesture. */
 export function unlockAudio() {
@@ -58,13 +62,14 @@ function render() {
     h('div', { class: 'rest-inner' },
       h('button', { class: 'rest-adj', 'aria-label': 'Minus 15 seconds', onclick: () => adjust(-15) }, '−15'),
       h('div', { class: 'rest-mid' },
-        h('div', { class: 'rest-time' }, done ? 'GO' : fmtClock(left)),
+        h('div', { class: 'rest-time' }, done ? 'Go' : fmtClock(left)),
         h('div', { class: 'rest-label' }, done ? 'Rest over' : state.label || 'Rest')),
       h('button', { class: 'rest-adj', 'aria-label': 'Plus 15 seconds', onclick: () => adjust(15) }, '+15'),
       h('button', { class: 'rest-skip', onclick: stop }, done ? 'Close' : 'Skip')));
   if (done && firedFor !== state.endAt) {
     firedFor = state.endAt;
     beep();
+    try { doneHook && doneHook(); } catch { /* decoration only */ }
     // auto-hide a little after it's over
     const endAt = state.endAt;
     setTimeout(() => { if (state && state.endAt === endAt) stop(); }, 15000);

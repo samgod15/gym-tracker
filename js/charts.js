@@ -70,7 +70,7 @@ export function lineChart({ series, fmt = (v) => String(v), ariaLabel = 'Chart' 
     const pts = [...s.points].sort((a, b) => a.x - b.x);
     if (s.line !== false && pts.length > 1) {
       const d = pts.map((p, i) => `${i ? 'L' : 'M'}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join(' ');
-      svg.appendChild(svgEl('path', { d, class: 'series-line', style: `stroke:${s.color}` }));
+      svg.appendChild(svgEl('path', { d, pathLength: 1, class: 'series-line', style: `stroke:${s.color}` }));
     }
     if (s.dots !== false) {
       for (const p of pts) svg.appendChild(svgEl('circle', { cx: px(p.x), cy: py(p.y), r: 4, class: 'series-dot', style: `fill:${s.color}` }));
