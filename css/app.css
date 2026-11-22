@@ -58,7 +58,7 @@
    chart series (validated dataviz steps) and the title gradient; js/fx.js swaps the background. */
 html[data-theme="aurora"] {
   --night: #04070d; --night-rgb: 4, 7, 13;
-  --steel: rgba(12, 20, 30, .66); --steel-rgb: 12, 20, 30; --steel-solid: #0c141e; --steel-2: #122030; --steel-3: #21334a;
+  --steel: rgba(12, 20, 30, .76); --steel-rgb: 12, 20, 30; --steel-solid: #0c141e; --steel-2: #122030; --steel-3: #21334a;
   --line: rgba(190, 255, 235, .08);
   --chalk: #eef5f6; --iron: #a2b6c2; --muted: #7d92a1;
   --plate-blue: #6553f0; --plate-blue-hi: #b2a8ff; --accent-rgb: 116, 98, 250; --accent-hi-rgb: 178, 168, 255; --accent-top: #7564f6; --accent-ink: #ffffff;

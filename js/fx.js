@@ -34,9 +34,9 @@ const aurora = {
   init(S) {
     const { w, h } = S;
     S.bands = [
-      { hue: 'rgba(52, 224, 176, 1)', y: 0.22, amp: 0.07, len: 0.42, k: 2.1, sp: 0.18, ph: 0, a: 0.5 },
-      { hue: 'rgba(139, 123, 255, 1)', y: 0.32, amp: 0.09, len: 0.5, k: 1.4, sp: -0.12, ph: 2, a: 0.45 },
-      { hue: 'rgba(76, 195, 255, 1)', y: 0.14, amp: 0.05, len: 0.32, k: 2.9, sp: 0.25, ph: 4, a: 0.35 },
+      { hue: 'rgba(52, 224, 176, 1)', y: 0.2, amp: 0.06, len: 0.42, k: 1.6, sp: 0.18, ph: 0, a: 0.34 },
+      { hue: 'rgba(139, 123, 255, 1)', y: 0.3, amp: 0.07, len: 0.5, k: 1.1, sp: -0.12, ph: 2, a: 0.3 },
+      { hue: 'rgba(76, 195, 255, 1)', y: 0.12, amp: 0.04, len: 0.32, k: 2.2, sp: 0.25, ph: 4, a: 0.22 },
     ];
     // vertical light ray sprite per band: bright at the top edge, fading downwards
     for (const b of S.bands) {
@@ -45,8 +45,8 @@ const aurora = {
       const g = c.getContext('2d');
       const grd = g.createLinearGradient(0, 0, 0, 128);
       grd.addColorStop(0, b.hue.replace(/1\)$/, '0)'));
-      grd.addColorStop(0.12, b.hue.replace(/1\)$/, '0.9)'));
-      grd.addColorStop(0.4, b.hue.replace(/1\)$/, '0.35)'));
+      grd.addColorStop(0.22, b.hue.replace(/1\)$/, '0.85)'));
+      grd.addColorStop(0.5, b.hue.replace(/1\)$/, '0.3)'));
       grd.addColorStop(1, b.hue.replace(/1\)$/, '0)'));
       g.fillStyle = grd; g.fillRect(0, 0, 1, 128);
       b.sprite = c;
@@ -84,7 +84,7 @@ const aurora = {
         const y = (b.y + wave * b.amp) * h;
         const shimmer = 0.55 + 0.45 * Math.sin(u * 37 + t * 1.7 + b.ph) * Math.sin(u * 13 - t * 0.9);
         ctx.globalAlpha = Math.max(0, b.a * shimmer);
-        ctx.drawImage(b.sprite, x, y - len * 0.12, step + 0.6, len);
+        ctx.drawImage(b.sprite, x, y - len * 0.22, step + 0.6, len);
       }
     }
     ctx.globalAlpha = 1;
@@ -274,8 +274,8 @@ let E = null; // { canvas, ctx, theme, S, raf, on, wanted, last }
 function sizeCanvas() {
   const r = THEMES[E.theme].renderer;
   const dpr = Math.min(window.devicePixelRatio || 1, 1.5) * r.res;
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const w = E.canvas.clientWidth || window.innerWidth;
+  const h = E.canvas.clientHeight || window.innerHeight;
   E.canvas.width = Math.max(1, Math.round(w * dpr));
   E.canvas.height = Math.max(1, Math.round(h * dpr));
   E.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
