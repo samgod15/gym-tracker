@@ -71,14 +71,17 @@ Upload the changed files to the same GitHub repo. If you change anything besides
 
 ```
 index.html               app shell
-css/app.css              styles (dark theme)
+css/app.css              styles and the four themes
 js/app.js                screens and logic
 js/calc.js               load math, e1RM, PRs, superset/rest rules
+js/body.js               strength standards, calorie targets, body fat
 js/db.js                 on-phone storage (IndexedDB), export/import
 js/sync.js               Firebase sync (newest edit wins, deletes sync too)
-js/seed.js               starter exercises, routines and baseline numbers
+js/seed.js               exercise library and starter plans
 js/timer.js              rest timer, wake lock, beep
 js/charts.js             progress charts
+js/fx.js                 moving backgrounds and themes
+js/install.js            Add to Home Screen help
 js/firebase-config.js    ← paste your Firebase config here
 sw.js                    offline support
 firestore.rules          paste into Firestore → Rules
