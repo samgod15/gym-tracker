@@ -2,8 +2,8 @@
 // Every synced record carries: id, updatedAt (ms), deleted (soft delete), _dirty (1 = not yet pushed).
 
 const DB_NAME = 'gymtracker';
-const DB_VERSION = 1;
-export const SYNCED_STORES = ['exercises', 'routines', 'workouts', 'bodyweight', 'settings'];
+const DB_VERSION = 2; // v2 adds measurements
+export const SYNCED_STORES = ['exercises', 'routines', 'workouts', 'bodyweight', 'measurements', 'settings'];
 
 let dbPromise = null;
 const listeners = new Set();
@@ -162,6 +162,19 @@ export async function getSettings() {
 export async function saveSettings(patch) {
   const cur = await getSettings();
   return put('settings', { ...cur, ...patch, id: 'main' });
+}
+
+// ---------- Profile (synced with settings) ----------
+export const DEFAULT_PROFILE = { id: 'profile', name: '', sex: '', birthYear: null, heightCm: null, units: 'metric', goal: 'maintain', activity: 'moderate', updatedAt: 1 };
+
+export async function getProfile() {
+  const p = await get('settings', 'profile');
+  return { ...DEFAULT_PROFILE, ...(p || {}) };
+}
+
+export async function saveProfile(patch) {
+  const cur = await getProfile();
+  return put('settings', { ...cur, ...patch, id: 'profile' });
 }
 
 // ---------- Export / import ----------

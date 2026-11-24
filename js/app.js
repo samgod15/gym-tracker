@@ -2,14 +2,15 @@ import * as db from './db.js';
 import * as calc from './calc.js';
 import * as timer from './timer.js';
 import * as sync from './sync.js';
-import { seedIfNeeded } from './seed.js';
+import { seedIfNeeded, seedNewUser, TEMPLATES } from './seed.js';
+import * as B from './body.js';
 import * as fx from './fx.js';
 import { lineChart } from './charts.js';
 import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, relTime } from './ui.js';
 import * as install from './install.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -20,15 +21,21 @@ const S = {
   bodyweight: [],
   histIndex: null, // exerciseId -> [{workout, entry, at}] newest first (finished workouts only)
   current: null, // workout open in the editor
+  profile: { ...db.DEFAULT_PROFILE },
+  measurements: [],
+  seeded: true,
 };
+const latestBW = () => S.bodyweight[0]?.weight ?? null;
 
 const exById = (id) => S.exercises.get(id) || { id, name: 'Deleted exercise', loadType: 'total', restSec: null, missing: true };
 const sortedExercises = () => [...S.exercises.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 async function loadAll() {
-  const [ex, rt, wo, bw, settings] = await Promise.all([
-    db.all('exercises'), db.all('routines'), db.all('workouts'), db.all('bodyweight'), db.getSettings(),
+  const [ex, rt, wo, bw, settings, profile, ms] = await Promise.all([
+    db.all('exercises'), db.all('routines'), db.all('workouts'), db.all('bodyweight'), db.getSettings(), db.getProfile(), db.all('measurements'),
   ]);
+  S.profile = profile;
+  S.measurements = ms.sort((a, b) => b.date.localeCompare(a.date));
   S.exercises = new Map(ex.map((e) => [e.id, e]));
   S.routines = rt.sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
   S.workouts = wo.sort((a, b) => b.startedAt - a.startedAt);
@@ -65,7 +72,7 @@ const main = document.getElementById('main');
 const titleEl = document.getElementById('title');
 const headRight = document.getElementById('head-right');
 const backBtn = document.getElementById('back');
-const ROOT_TABS = ['train', 'history', 'progress', 'body'];
+const ROOT_TABS = ['train', 'history', 'progress', 'body', 'welcome'];
 const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress' };
 const navStack = []; // hashes visited inside the app, so Back can return to where you came from
 
@@ -84,6 +91,7 @@ let elapsedTick = null;
 
 async function render() {
   const r = route();
+  if (!S.seeded && r.name !== 'welcome') { location.replace('#/welcome'); return; }
   clearInterval(elapsedTick);
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tabFor(r.name)));
   fill(headRight, syncButton());
@@ -91,7 +99,7 @@ async function render() {
   app.dataset.route = r.name;
   const views = {
     train: viewTrain, workout: viewWorkout, routine: viewRoutine, history: viewHistory, session: viewSession,
-    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings,
+    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings, welcome: viewWelcome,
   };
   const fn = views[r.name] || viewTrain;
   const same = r.name === lastRoute.name && r.id === lastRoute.id;
@@ -122,12 +130,25 @@ let lastRoute = {};
 const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress' }[name] || name);
 function setTitle(t) {
   const span = titleEl.querySelector('.title-text');
-  if (span.textContent === t) return;
+  if (span.textContent === t) return fitTitle();
   span.textContent = t;
   span.classList.remove('enter');
   void span.offsetWidth;
   span.classList.add('enter');
+  fitTitle();
 }
+
+/** Shrink the header title so long names ("Edit workout") fit beside the back and sync buttons. */
+function fitTitle() {
+  const span = titleEl.querySelector('.title-text');
+  titleEl.style.fontSize = '';
+  requestAnimationFrame(() => {
+    const room = titleEl.clientWidth; const need = span.scrollWidth;
+    if (room && need > room) titleEl.style.fontSize = `${Math.max(24, Math.floor(parseFloat(getComputedStyle(titleEl).fontSize) * room / need))}px`;
+  });
+}
+addEventListener('resize', fitTitle);
+document.fonts?.ready.then(fitTitle);
 
 // ---------------------------------------------------------------- sync badge
 const CLOUD = '<path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6 6 0 0 0 6.2 11.2 3.7 3.7 0 0 0 7 18.5Z"/>';
@@ -175,7 +196,8 @@ async function onSyncTap() {
   else toast('Synced');
 }
 
-function openSyncSheet() { sheet(syncPanel(), { title: 'Cloud sync' }); }
+let closeSyncSheet = null;
+function openSyncSheet() { closeSyncSheet = sheet(syncPanel(), { title: 'Cloud sync', onClose: () => { closeSyncSheet = null; } }); }
 
 /** Sync controls used in the sheet and in Settings. Redraws itself when sync status changes. */
 function syncPanel() {
@@ -756,6 +778,11 @@ function exerciseForm(initial, onSaved) {
         ex.loadType === 'stack' ? h('label', { class: 'field' }, h('span', null, 'Lbs per stack plate (optional — leave blank to track plates)'),
           numInput({ value: ex.lbsPerPlate, label: 'Pounds per plate', onInput: (v) => (ex.lbsPerPlate = v) })) : null,
         h('label', { class: 'field' }, h('span', null, 'Rest after a set (seconds)'), numInput({ value: ex.restSec, decimal: false, label: 'Rest seconds', onInput: (v) => (ex.restSec = v) })),
+        ex.loadType !== 'cardio' && ex.loadType !== 'stack' ? h('label', { class: 'field' }, h('span', null, 'Strength level compares it to'),
+          h('select', { onchange: (e) => (ex.standard = e.target.value) },
+            h('option', { value: '', selected: !ex.standard ? 'selected' : null }, `Automatic${B.standardFor({ ...ex, standard: '' }) ? ` (${B.STANDARDS[B.standardFor({ ...ex, standard: '' }).key].name})` : ' (none found)'}`),
+            h('option', { value: 'none', selected: ex.standard === 'none' ? 'selected' : null }, 'Don’t rate this exercise'),
+            Object.entries(B.STANDARDS).map(([k, v]) => h('option', { value: k, selected: ex.standard === k ? 'selected' : null }, v.name)))) : null,
         h('label', { class: 'field' }, h('span', null, 'Muscle group (optional)'), h('input', { value: ex.muscle || '', oninput: (e) => (ex.muscle = e.target.value) })),
         h('label', { class: 'field' }, h('span', null, 'Notes (seat height, grip…)'), h('textarea', { rows: 2, oninput: (e) => (ex.notes = e.target.value) }, ex.notes || '')),
         h('button', { class: 'btn primary block', onclick: async () => {
@@ -908,11 +935,13 @@ async function viewProgress() {
     fill(list, 
       logged.length ? h('h2', { class: 'month' }, 'Logged') : null,
       logged.map(({ ex, sr, lastAt }) => {
+        const lvl = levelFor(ex);
         const first = sr.points[0].y; const last = sr.points[sr.points.length - 1].y;
         const best = Math.max(...sr.points.map((p) => p.y));
         const delta = last - first;
         return h('button', { class: 'card progress-row', onclick: () => go(`#/exercise/${ex.id}`) },
-          h('div', null, h('div', { class: 'card-title' }, ex.name), h('div', { class: 'muted small' }, `Last ${fmtDate(lastAt, { month: 'short', day: 'numeric' })}, ${sr.points.length} session${sr.points.length > 1 ? 's' : ''}`)),
+          h('div', null, h('div', { class: 'card-title' }, ex.name), h('div', { class: 'muted small' }, `Last ${fmtDate(lastAt, { month: 'short', day: 'numeric' })}, ${sr.points.length} session${sr.points.length > 1 ? 's' : ''}`),
+            lvl ? h('span', { class: `level-chip lv${lvl.idx}` }, lvl.level) : null),
           h('div', { class: 'progress-num' },
             h('div', { class: 'big-num' }, `${calc.fmtNum(best)}`, h('span', { class: 'unit' }, ` ${sr.unit}`)),
             h('div', { class: `small ${delta > 0 ? 'up' : 'muted'}` }, sr.points.length > 1 ? `${delta > 0 ? '▲ +' : delta < 0 ? '▼ −' : '± '}${calc.fmtNum(Math.round(Math.abs(delta) * 10) / 10)} since first` : sr.metric.key === 'e1rm' ? 'best est. 1RM' : 'best')));
@@ -955,6 +984,7 @@ async function viewExercise(id) {
       h('div', null, h('h2', { class: 'big-title' }, ex.name), h('div', { class: 'muted small' }, [ex.muscle, calc.LOAD_TYPES[ex.loadType]?.label, ex.loadType === 'plates' ? `base ${calc.fmtNum(ex.baseWeight || 0)} lb` : null, ex.loadType === 'stack' && ex.lbsPerPlate ? `${ex.lbsPerPlate} lb/plate` : null].filter(Boolean).join(', '))),
       h('button', { class: 'btn small ghost', onclick: () => exerciseForm(structuredClone(ex), () => render()) }, 'Edit')),
     ex.notes ? h('p', { class: 'muted pre' }, ex.notes) : null,
+    strengthCard(ex),
     h('div', { class: 'card' },
       h('div', { class: 'chart-title' }, sr.metric.key === 'e1rm' ? `Estimated 1-rep max (${sr.unit}) per session` : `${sr.metric.label} per session`),
       sr.metric.key === 'e1rm' ? h('div', { class: 'muted small' }, 'Best working set each session, Epley formula. Warm-ups and drops excluded.') : null,
@@ -975,9 +1005,279 @@ async function viewExercise(id) {
       })))) : h('p', { class: 'muted' }, 'Not logged yet.'));
 }
 
-// ================================================================= BODYWEIGHT
+// ================================================================= PROFILE
+const LEN_UNIT = () => (S.profile.units === 'imperial' ? 'in' : 'cm');
+const toCm = (v) => (v === null ? null : S.profile.units === 'imperial' ? B.inToCm(v) : v);
+const fromCm = (cm) => (cm === null || cm === undefined ? null : Math.round((S.profile.units === 'imperial' ? B.cmToIn(cm) : cm) * 10) / 10);
+
+/** Profile editor used by the welcome flow and the Settings/Body sheets. Calls onSave(patch, weightLb). */
+function profileEditor({ submitLabel = 'Save', onSave, onSkip } = {}) {
+  const p = { ...S.profile };
+  const st = {
+    name: p.name || '', sex: p.sex || '', age: B.ageOf(p) ?? null, units: p.units || 'metric',
+    cm: p.heightCm || null, weight: latestBW(), goal: p.goal || 'maintain', activity: p.activity || 'moderate',
+  };
+  const wrap = h('div', { class: 'stack profile-editor' });
+  const draw = () => {
+    const ftIn = st.cm ? Math.round(B.cmToIn(st.cm)) : null;
+    const heightField = st.units === 'imperial'
+      ? h('div', { class: 'row gap' },
+        numInput({ value: ftIn !== null ? Math.floor(ftIn / 12) : null, placeholder: 'ft', label: 'Height feet', decimal: false, onInput: (v) => { const inch = ftIn !== null ? ftIn % 12 : 0; st.cm = v !== null ? B.inToCm(v * 12 + inch) : null; } }),
+        numInput({ value: ftIn !== null ? ftIn % 12 : null, placeholder: 'in', label: 'Height inches', decimal: false, onInput: (v) => { const ft = st.cm ? Math.floor(Math.round(B.cmToIn(st.cm)) / 12) : 0; st.cm = B.inToCm(ft * 12 + (v || 0)); } }))
+      : numInput({ value: st.cm ? Math.round(st.cm) : null, placeholder: 'cm', label: 'Height in centimetres', decimal: false, onInput: (v) => (st.cm = v) });
+    fill(wrap,
+      h('label', { class: 'field' }, h('span', null, 'Name (optional)'), h('input', { value: st.name, autocomplete: 'given-name', oninput: (e) => (st.name = e.target.value) })),
+      h('div', { class: 'field' }, h('span', null, 'Sex (for calorie and strength formulas)'),
+        h('div', { class: 'seg' }, [['male', 'Male'], ['female', 'Female']].map(([k, l]) => h('button', { class: `seg-btn ${st.sex === k ? 'on' : ''}`, onclick: () => { st.sex = k; draw(); } }, l)))),
+      h('div', { class: 'row gap' },
+        h('label', { class: 'field grow' }, h('span', null, 'Age'), numInput({ value: st.age, placeholder: 'years', label: 'Age', decimal: false, onInput: (v) => (st.age = v) })),
+        h('label', { class: 'field grow' }, h('span', null, 'Weight (lb)'), numInput({ value: st.weight, placeholder: 'lb', label: 'Bodyweight in pounds', onInput: (v) => (st.weight = v) }))),
+      h('div', { class: 'field' },
+        h('div', { class: 'row between' }, h('span', null, 'Height'),
+          h('div', { class: 'seg mini' }, [['metric', 'cm'], ['imperial', 'ft/in']].map(([k, l]) => h('button', { class: `seg-btn ${st.units === k ? 'on' : ''}`, onclick: () => { st.units = k; draw(); } }, l)))),
+        heightField),
+      h('div', { class: 'field' }, h('span', null, 'Goal'),
+        h('div', { class: 'opt-grid' }, Object.entries(B.GOALS).map(([k, g]) => h('button', { class: `opt ${st.goal === k ? 'on' : ''}`, onclick: () => { st.goal = k; draw(); } },
+          h('strong', null, g.label), h('span', null, g.note))))),
+      h('div', { class: 'field' }, h('span', null, 'How active are you outside the gym?'),
+        h('div', { class: 'opt-list' }, Object.entries(B.ACTIVITY).map(([k, a]) => h('button', { class: `opt ${st.activity === k ? 'on' : ''}`, onclick: () => { st.activity = k; draw(); } },
+          h('strong', null, a.label), h('span', null, a.note))))),
+      h('button', { class: 'btn primary block big-cta', onclick: async () => {
+        if (st.age !== null && (st.age < 13 || st.age > 100)) return toast('Check your age');
+        if (st.cm !== null && (st.cm < 120 || st.cm > 230)) return toast('Check your height');
+        if (st.weight !== null && (st.weight < 60 || st.weight > 700)) return toast('Enter your weight in lb');
+        const patch = {
+          name: st.name.trim(), sex: st.sex, units: st.units, heightCm: st.cm ? Math.round(st.cm * 10) / 10 : null,
+          birthYear: st.age ? new Date().getFullYear() - st.age : null, goal: st.goal, activity: st.activity,
+        };
+        await onSave(patch, st.weight);
+      } }, submitLabel),
+      onSkip ? h('button', { class: 'link center', onclick: onSkip }, 'Skip for now') : null);
+  };
+  draw();
+  return wrap;
+}
+
+async function saveProfileAndWeight(patch, weightLb) {
+  await db.saveProfile(patch);
+  if (weightLb && weightLb !== latestBW()) {
+    const d = todayISO();
+    const existing = S.bodyweight.find((b) => b.date === d);
+    await db.put('bodyweight', { id: existing?.id || `bw-${d}`, date: d, weight: weightLb });
+  }
+  await loadAll();
+}
+
+function openProfileSheet() {
+  sheet((close) => profileEditor({
+    onSave: async (patch, w) => { await saveProfileAndWeight(patch, w); close(); toast('Profile saved'); render(); },
+  }), { title: 'Your profile' });
+}
+
+// ================================================================= WELCOME (first launch)
+const W = { step: 0, plan: 'upperlower' };
+async function viewWelcome() {
+  setTitle('Welcome');
+  if (S.seeded) { location.replace('#/train'); return h('div'); }
+  const finish = async () => {
+    await seedNewUser(W.plan);
+    S.seeded = true;
+    await loadAll();
+    W.step = 0;
+    location.replace('#/train');
+    toast(S.profile.name ? `You’re set, ${S.profile.name}` : 'You’re set — start your first workout');
+  };
+  if (W.step === 0) {
+    return h('div', { class: 'page stack welcome' },
+      h('div', { class: 'welcome-hero' },
+        h('div', { class: 'hero-name' }, 'Lift. Log. Level up.'),
+        h('p', { class: 'hero-meta' }, 'Track every set, see your strength level, and get calorie targets that fit your goal. Everything is saved on this phone first.')),
+      h('button', { class: 'btn primary block big-cta', onclick: () => { W.step = 1; render(); } }, 'Set me up'),
+      h('div', { class: 'card stack' },
+        h('strong', null, 'Already use Gym Tracker?'),
+        h('p', { class: 'muted small' }, 'Bring your log over from your other phone.'),
+        h('div', { class: 'row gap' },
+          h('button', { class: 'btn grow', onclick: openSyncSheet }, 'Sign in to sync'),
+          h('button', { class: 'btn ghost grow', onclick: importBackup }, 'Import backup'))));
+  }
+  if (W.step === 1) {
+    return h('div', { class: 'page stack welcome' },
+      h('div', { class: 'step-dots', 'aria-label': 'Step 1 of 2' }, h('span', { class: 'on' }), h('span')),
+      h('h2', { class: 'big-title' }, 'About you'),
+      h('p', { class: 'muted' }, 'Used for calorie and protein targets and to rate your lifts against people your size. You can change it any time in Settings.'),
+      profileEditor({
+        submitLabel: 'Continue',
+        onSave: async (patch, w) => { await saveProfileAndWeight(patch, w); W.step = 2; render(); },
+        onSkip: () => { W.step = 2; render(); },
+      }));
+  }
+  return h('div', { class: 'page stack welcome' },
+    h('div', { class: 'step-dots', 'aria-label': 'Step 2 of 2' }, h('span', { class: 'on' }), h('span', { class: 'on' })),
+    h('h2', { class: 'big-title' }, 'Pick a starter plan'),
+    h('p', { class: 'muted' }, 'You can edit every routine, or build your own later.'),
+    h('div', { class: 'opt-list' }, Object.entries(TEMPLATES).map(([k, t]) => h('button', { class: `opt plan ${W.plan === k ? 'on' : ''}`, onclick: () => { W.plan = k; render(); } },
+      h('strong', null, t.label), h('span', null, t.desc),
+      t.routines.length ? h('span', { class: 'plan-days' }, t.routines.map((r) => r.name).join(', ')) : null))),
+    h('button', { class: 'btn primary block big-cta', onclick: finish }, 'Start training'),
+    h('button', { class: 'link center', onclick: () => { W.step = 1; render(); } }, 'Back'));
+}
+
+// ================================================================= STRENGTH LEVEL
+/** Best estimated max for comparing against standards (pull-ups include bodyweight). */
+function levelValue(ex, bw) {
+  const std = B.standardFor(ex);
+  if (!std) return null;
+  let best = null;
+  for (const r of histIndex().get(ex.id) || []) {
+    for (const s of r.entry.sets) {
+      if (!calc.isCompletedWorkSet(s) || !s.reps) continue;
+      const L = calc.setLoad(ex, s);
+      if (L.unit !== 'lb' || L.value === null) continue;
+      const load = std.key === 'pullup' ? bw + L.value : L.value;
+      const est = calc.e1rm(load, Math.min(s.reps, 15));
+      if (est !== null && (best === null || est > best)) best = est;
+    }
+  }
+  return best;
+}
+
+function levelFor(ex) {
+  const std = B.standardFor(ex);
+  const bw = latestBW();
+  const sex = S.profile.sex;
+  if (!std || !bw || !sex) return null;
+  const v = levelValue(ex, bw);
+  return v ? { ...B.strengthLevel(std.key, sex, bw, v, std.factor), std, value: v, bw } : null;
+}
+
+function strengthCard(ex) {
+  const std = B.standardFor(ex);
+  if (!std) return null;
+  const bw = latestBW();
+  if (!S.profile.sex || !bw) {
+    return h('div', { class: 'card stack' }, h('h3', null, 'Strength level'),
+      h('p', { class: 'muted small' }, 'Add your sex and bodyweight to see how this lift compares with lifters your size.'),
+      h('button', { class: 'btn small', onclick: openProfileSheet }, 'Set up profile'));
+  }
+  const L = levelFor(ex);
+  if (!L) return h('div', { class: 'card stack' }, h('h3', null, 'Strength level'), h('p', { class: 'muted small' }, 'Log a working set to see your level.'));
+  const isPull = std.key === 'pullup';
+  const pos = Math.max(0, Math.min(5, L.idx + 1 + (L.idx < 4 ? L.pctToNext : 0))) / 5;
+  const nextText = L.next
+    ? isPull
+      ? `Next: ${L.nextLevel} at about +${Math.max(0, Math.round(L.next - bw))} lb for 1 rep (or ${Math.max(1, Math.round((L.next / bw - 1) * 30))} bodyweight reps)`
+      : `Next: ${L.nextLevel} at ${Math.round(L.next)} lb est. 1RM${ex.loadType === 'dumbbell' ? ' per dumbbell' : ''}`
+    : 'Top level. Elite for your bodyweight.';
+  return h('div', { class: 'card stack level-card' },
+    h('div', { class: 'row between' }, h('h3', null, 'Strength level'), h('span', { class: 'muted small' }, `${L.ratio.toFixed(2)}× bodyweight`)),
+    h('div', { class: `level-name lv${L.idx}` }, L.level),
+    h('div', { class: 'level-bar', role: 'img', 'aria-label': `${L.level}, ${Math.round(pos * 100)}% of the way to Elite` },
+      B.LEVELS.map((n, i) => h('span', { class: `lseg ${i <= L.idx ? 'on' : ''}` }, h('em', null, n.slice(0, 3)))),
+      h('i', { class: 'marker', style: { left: `${pos * 100}%` } })),
+    h('div', { class: 'small' }, nextText),
+    h('div', { class: 'muted small' }, `Compared with ${S.profile.sex} lifters at ${calc.fmtNum(bw)} lb (StrengthLevel.com data${L.approx ? ', estimated' : ''}). Best est. 1RM: ${Math.round(L.value)} lb${isPull ? ' incl. bodyweight' : ''}.`));
+}
+
+// ================================================================= BODY (weight, targets, measurements)
+function targetsCard() {
+  const bw = latestBW();
+  const p = S.profile;
+  if (!B.profileComplete(p, bw)) {
+    return h('div', { class: 'card stack' }, h('h3', null, 'Daily targets'),
+      h('p', { class: 'muted small' }, 'Add your sex, age, height and weight to get calorie and protein targets for your goal.'),
+      h('button', { class: 'btn primary block', onclick: openProfileSheet }, 'Set up profile'));
+  }
+  const t = B.targets(p, bw);
+  const pts = [...S.bodyweight].sort((a, b) => a.date.localeCompare(b.date));
+  const rate = B.weeklyRate(pts);
+  const adv = B.trendAdvice(rate, t);
+  const fmtRate = (r) => `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(1)} lb/week`;
+  const [lo, hi] = t.rateRange;
+  let trend;
+  if (rate === null) trend = h('div', { class: 'trend muted small' }, 'Weigh in 3 or more times a week. After 2 weeks this checks your real rate against your goal.');
+  else if (adv.status === 'on') trend = h('div', { class: 'trend good small' }, `On track: ${fmtRate(rate)} (goal ${fmtRate(lo)} to ${fmtRate(hi)}).`);
+  else trend = h('div', { class: 'trend warn small' }, `${fmtRate(rate)} over 4 weeks. Goal is ${fmtRate(lo)} to ${fmtRate(hi)}. ${adv.adjust > 0 ? `Eat about ${adv.adjust} kcal more a day.` : `Eat about ${-adv.adjust} kcal less a day.`}`);
+  const macro = (label, g, kcalPer) => h('div', { class: 'macro' }, h('div', { class: 'macro-val' }, `${g}`, h('span', null, 'g')), h('div', { class: 'stat-label' }, label), h('div', { class: 'muted tiny' }, `${Math.round((g * kcalPer / t.kcal) * 100)}%`));
+  return h('div', { class: 'card stack targets' },
+    h('div', { class: 'row between' }, h('h3', null, 'Daily targets'), h('button', { class: 'btn small ghost', onclick: openProfileSheet }, 'Edit')),
+    h('div', { class: 'kcal-row' }, h('div', { class: 'kcal' }, t.kcal.toLocaleString()), h('div', { class: 'muted small' }, `calories a day, goal: ${t.goal.label.toLowerCase()}`)),
+    h('div', { class: 'macro-row' }, macro('Protein', t.protein, 4), macro('Carbs', t.carbs, 4), macro('Fat', t.fat, 9)),
+    trend,
+    h('div', { class: 'muted tiny' }, `Maintenance about ${t.tdee.toLocaleString()} kcal (resting ${t.bmr.toLocaleString()}), from ${B.fmtHeight(p.heightCm, p.units)}, ${B.ageOf(p)} years, ${calc.fmtNum(bw)} lb, ${t.act.label.toLowerCase()}. Estimates: let your weekly trend be the judge.${t.floored ? ' Capped at a safe minimum.' : ''}`));
+}
+
+let measureKey = 'waist';
+function measurementsSection() {
+  const ms = S.measurements; // newest first
+  const units = S.profile.units;
+  const unit = LEN_UNIT();
+  const header = h('div', { class: 'section-head' }, h('h2', null, 'Measurements'), h('button', { class: 'btn small primary', onclick: () => openMeasureSheet() }, '+ Log'));
+  if (!ms.length) {
+    return h('div', { class: 'stack' }, header,
+      h('p', { class: 'muted small' }, 'Track arms, chest, shoulders and waist to see where you’re growing. Measure every 2–4 weeks, same time of day, tape snug but not tight. Waist + neck gives a body-fat estimate.'));
+  }
+  const latestOf = (k) => ms.find((m) => m[k]);
+  const prevOf = (k) => ms.filter((m) => m[k])[1];
+  const logged = B.MEASURES.filter((m) => latestOf(m.key));
+  if (!logged.some((m) => m.key === measureKey)) measureKey = logged[0]?.key || 'waist';
+  // body fat from the newest entry that has what the formula needs
+  const bfPoints = [...ms].reverse().map((m) => ({ m, bf: B.navyBodyFat({ sex: S.profile.sex, heightCm: S.profile.heightCm, neck: m.neck, waist: m.waist, hips: m.hips }) })).filter((x) => x.bf !== null);
+  const bfNow = bfPoints[bfPoints.length - 1];
+  const bfFirst = bfPoints[0];
+  const toMs = (d) => Date.parse(d + 'T12:00:00');
+  const series = [...ms].reverse().filter((m) => m[measureKey]).map((m) => ({ x: toMs(m.date), y: fromCm(m[measureKey]) }));
+  return h('div', { class: 'stack' }, header,
+    bfNow ? h('div', { class: 'card bf-card' },
+      h('div', null, h('div', { class: 'stat-label' }, 'Est. body fat'), h('div', { class: 'stat-val' }, `${bfNow.bf}%`)),
+      h('div', { class: 'muted small' }, bfPoints.length > 1 ? `${bfNow.bf - bfFirst.bf <= 0 ? '▼' : '▲'} ${Math.abs(Math.round((bfNow.bf - bfFirst.bf) * 10) / 10)} since ${fmtDate(toMs(bfFirst.m.date), { month: 'short', day: 'numeric' })}. US Navy tape method, about ±3–4%.` : 'US Navy tape method, about ±3–4%. Track the trend, not the exact number.'))
+      : (!S.profile.sex || !S.profile.heightCm) ? h('p', { class: 'muted small' }, 'Add your sex and height in your profile to get a body-fat estimate from waist and neck.') : null,
+    h('div', { class: 'measure-grid' }, logged.map((m) => {
+      const cur = latestOf(m.key)[m.key];
+      const prev = prevOf(m.key)?.[m.key];
+      const d = prev ? fromCm(cur) - fromCm(prev) : null;
+      return h('button', { class: `measure ${measureKey === m.key ? 'on' : ''}`, onclick: () => { measureKey = m.key; render(); } },
+        h('div', { class: 'stat-label' }, m.label),
+        h('div', { class: 'measure-val' }, `${fromCm(cur)}`, h('span', null, ` ${unit}`)),
+        d !== null && Math.abs(d) >= 0.05 ? h('div', { class: `tiny ${d > 0 ? 'up' : 'muted'}` }, `${d > 0 ? '+' : '−'}${Math.abs(Math.round(d * 10) / 10)}`) : h('div', { class: 'tiny muted' }, ' '));
+    })),
+    series.length ? h('div', { class: 'card' },
+      h('div', { class: 'chart-title' }, `${B.MEASURES.find((m) => m.key === measureKey)?.label || ''} (${unit})`),
+      lineChart({ series: [{ name: measureKey, color: 'var(--series-1)', points: series }], fmt: (v) => `${calc.fmtNum(v)} ${unit}`, ariaLabel: `${measureKey} over time` })) : null,
+    h('div', { class: 'table-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', null, 'Logged'), h('th', null, h('span', { class: 'sr' }, 'Actions')))),
+      h('tbody', null, ms.map((m) => h('tr', null,
+        h('td', null, fmtDate(toMs(m.date), { month: 'short', day: 'numeric', year: '2-digit' })),
+        h('td', { class: 'muted' }, B.MEASURES.filter((x) => m[x.key]).map((x) => `${x.label.replace(' (flexed)', '')} ${fromCm(m[x.key])}`).join(', ')),
+        h('td', { class: 'num-col' },
+          h('button', { class: 'icon-btn sm', 'aria-label': `Edit ${m.date}`, onclick: () => openMeasureSheet(m) }, '✎'),
+          h('button', { class: 'icon-btn sm', 'aria-label': `Delete ${m.date}`, onclick: async () => { const ok = await confirmSheet(`Delete the measurements from ${m.date}?`, { ok: 'Delete', danger: true }); if (ok) { await db.remove('measurements', m.id); await loadAll(); render(); } } }, '✕'))))))));
+}
+
+function openMeasureSheet(existing = null) {
+  const last = S.measurements[0] || {};
+  const rec = existing ? { ...existing } : { date: todayISO() };
+  const unit = LEN_UNIT();
+  sheet((close) => h('div', { class: 'stack' },
+    h('label', { class: 'field' }, h('span', null, 'Date'), h('input', { type: 'date', value: rec.date, max: todayISO(), onchange: (e) => (rec.date = e.target.value || todayISO()) })),
+    h('p', { class: 'muted small' }, `Fill in what you measured (${unit}). Leave the rest blank.`),
+    h('div', { class: 'measure-form' }, B.MEASURES.filter((m) => m.key !== 'hips' || S.profile.sex !== 'male').map((m) => h('label', { class: 'field' },
+      h('span', null, m.label), numInput({ value: fromCm(rec[m.key]), placeholder: last[m.key] ? String(fromCm(last[m.key])) : unit, label: `${m.label} in ${unit}`, onInput: (v) => (rec[m.key] = v === null ? null : Math.round(toCm(v) * 10) / 10) }),
+      h('small', { class: 'muted tiny' }, m.hint)))),
+    h('button', { class: 'btn primary block big-cta', onclick: async () => {
+      const vals = B.MEASURES.map((m) => rec[m.key]).filter((v) => v);
+      if (!vals.length) return toast('Enter at least one measurement');
+      if (vals.some((v) => v < 10 || v > 250)) return toast(`Check the numbers are in ${unit}`);
+      await db.put('measurements', { ...rec, id: existing?.id || `ms-${rec.date}` });
+      await loadAll();
+      close();
+      toast('Measurements saved');
+      render();
+    } }, 'Save measurements')),
+  { title: existing ? 'Edit measurements' : 'Log measurements' });
+}
+
 async function viewBody() {
-  setTitle('Bodyweight');
+  setTitle('Body');
   const date = h('input', { type: 'date', value: todayISO(), 'aria-label': 'Date', max: todayISO() });
   const weight = numInput({ value: null, placeholder: S.bodyweight[0]?.weight ?? 'lb', label: 'Bodyweight in pounds', onInput: () => {} });
   const save = async () => {
@@ -998,10 +1298,12 @@ async function viewBody() {
   const monthAgo = avg.filter((a) => toMs(a.date) <= Date.now() - 28 * 86400000).pop();
 
   return h('div', { class: 'page stack' },
+    targetsCard(),
+    h('div', { class: 'section-head' }, h('h2', null, 'Weight')),
     h('div', { class: 'card stack' },
       h('div', { class: 'row gap' }, h('label', { class: 'field grow' }, h('span', null, 'Weight (lb)'), weight), h('label', { class: 'field grow' }, h('span', null, 'Date'), date)),
       h('button', { class: 'btn primary block', onclick: save }, 'Log weight'),
-      h('p', { class: 'muted small' }, 'Weigh in the same way each time (morning, after the bathroom) — the 7-day average smooths out water swings.')),
+      h('p', { class: 'muted small' }, 'Weigh in the same way each time (morning, after the bathroom). The 7-day average smooths out water swings.')),
     pts.length ? h('div', { class: 'stat-row' },
       stat(`${calc.fmtNum(latest.weight)}`, 'Latest (lb)'),
       stat(`${calc.fmtNum(latestAvg.avg)}`, '7-day avg'),
@@ -1015,13 +1317,26 @@ async function viewBody() {
         ],
         fmt: (v) => `${calc.fmtNum(v)} lb`, ariaLabel: 'Bodyweight trend',
       })) : h('p', { class: 'muted' }, 'No weigh-ins yet.'),
-    pts.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'tbl' },
-      h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', { class: 'num-col' }, 'Weight'), h('th', { class: 'num-col' }, '7-day avg'), h('th', null, h('span', { class: 'sr' }, 'Delete')))),
-      h('tbody', null, [...pts].reverse().map((p) => h('tr', null,
-        h('td', null, fmtDate(toMs(p.date), { weekday: 'short', month: 'short', day: 'numeric' })),
-        h('td', { class: 'num-col' }, calc.fmtNum(p.weight)),
-        h('td', { class: 'num-col muted' }, calc.fmtNum(avg.find((a) => a.date === p.date)?.avg)),
-        h('td', { class: 'num-col' }, h('button', { class: 'icon-btn sm', 'aria-label': `Delete ${p.date}`, onclick: async () => { await db.remove('bodyweight', p.id); await loadAll(); render(); } }, '✕'))))))) : null);
+    pts.length ? h('details', { class: 'card log-details' }, h('summary', null, `All weigh-ins (${pts.length})`),
+      h('div', { class: 'table-wrap flat' }, h('table', { class: 'tbl' },
+        h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', { class: 'num-col' }, 'Weight'), h('th', { class: 'num-col' }, '7-day avg'), h('th', null, h('span', { class: 'sr' }, 'Delete')))),
+        h('tbody', null, [...pts].reverse().map((p) => h('tr', null,
+          h('td', null, fmtDate(toMs(p.date), { weekday: 'short', month: 'short', day: 'numeric' })),
+          h('td', { class: 'num-col' }, calc.fmtNum(p.weight)),
+          h('td', { class: 'num-col muted' }, calc.fmtNum(avg.find((a) => a.date === p.date)?.avg)),
+          h('td', { class: 'num-col' }, h('button', { class: 'icon-btn sm', 'aria-label': `Delete ${p.date}`, onclick: async () => { await db.remove('bodyweight', p.id); await loadAll(); render(); } }, '✕')))))))) : null,
+    measurementsSection());
+}
+
+async function shareApp() {
+  const url = location.href.split('#')[0].split('?')[0];
+  try {
+    if (navigator.share) { await navigator.share({ title: 'Gym Tracker', text: 'Track your lifts, PRs and progress with Gym Tracker:', url }); return; }
+    await navigator.clipboard.writeText(url);
+    toast('Link copied — paste it in a text');
+  } catch (e) {
+    if (e?.name !== 'AbortError') toast(url);
+  }
 }
 
 // ================================================================= SETTINGS
@@ -1055,6 +1370,7 @@ function importBackup() {
     try {
       const data = JSON.parse(await f.text());
       const n = await db.importAll(data);
+      if (!S.seeded) { await db.setMeta('seeded', true); S.seeded = true; location.replace('#/train'); }
       await loadAll();
       toast(`Imported ${n} record${n === 1 ? '' : 's'}`);
       sync.schedule(0);
@@ -1075,8 +1391,19 @@ async function viewSettings() {
   const plateInv = S.settings.plates || [];
   const allPlates = [...new Set([55, 45, 35, 25, 10, 5, 2.5, 1.25, ...plateInv])].sort((a, b) => b - a);
 
+  const p = S.profile;
+  const bw = latestBW();
+  const summary = [p.name, p.sex ? (p.sex === 'male' ? 'Male' : 'Female') : null, B.ageOf(p) ? `${B.ageOf(p)} yrs` : null, p.heightCm ? B.fmtHeight(p.heightCm, p.units) : null, bw ? `${calc.fmtNum(bw)} lb` : null, B.GOALS[p.goal]?.label].filter(Boolean).join(', ');
   return h('div', { class: 'page stack' },
+    h('div', { class: 'card stack' }, h('h3', null, 'Your profile'),
+      h('p', { class: 'muted small' }, B.profileComplete(p, bw) ? summary : 'Add your details to get calorie targets, body-fat estimates and strength levels.'),
+      h('div', { class: 'row gap' },
+        h('button', { class: 'btn primary grow', onclick: openProfileSheet }, B.profileComplete(p, bw) ? 'Edit profile' : 'Set up profile'),
+        h('div', { class: 'seg mini' }, [['metric', 'cm'], ['imperial', 'in']].map(([k, l]) => h('button', { class: `seg-btn ${(p.units || 'metric') === k ? 'on' : ''}`, 'aria-label': `Body measurements in ${l}`, onclick: async () => { await db.saveProfile({ units: k }); await loadAll(); render(); } }, l))))),
     h('div', { class: 'card stack' }, h('h3', null, 'Cloud sync'), syncPanel()),
+    h('div', { class: 'card stack' }, h('h3', null, 'Share Gym Tracker'),
+      h('p', { class: 'muted small' }, 'Send the app to a friend. They get their own setup, and their workouts stay on their phone and their own sync account.'),
+      h('button', { class: 'btn block', onclick: shareApp }, 'Share app link')),
     h('div', { class: 'card stack' }, h('h3', null, 'Home Screen'),
       install.isStandalone()
         ? h('p', { class: 'muted small' }, 'You’re using the Home Screen app. It opens full screen and works offline.')
@@ -1133,7 +1460,7 @@ function toggle(label, on, onSet, note) {
 // ================================================================= BOOT
 async function boot() {
   try {
-    await seedIfNeeded();
+    S.seeded = (await seedIfNeeded()) !== 'onboard';
     await loadAll();
   } catch (e) {
     fill(main, h('div', { class: 'page' }, h('p', null, `Couldn’t open storage: ${e.message || e}`)));
@@ -1154,6 +1481,14 @@ async function boot() {
   });
   sync.onStatus(async (_st, changed) => {
     if (changed) await loadAll();
+    if (changed && !S.seeded && S.exercises.size) {
+      await db.setMeta('seeded', true);
+      S.seeded = true;
+      closeSyncSheet && closeSyncSheet();
+      location.replace('#/train');
+      toast('Your log is back on this phone');
+      return;
+    }
     // New data from another phone: redraw (but never under a workout you're logging). The sync
     // panels redraw themselves, so typing in the sign-in form is never wiped.
     if (changed && !S.current) render();

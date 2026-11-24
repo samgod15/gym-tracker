@@ -1,12 +1,15 @@
 # Gym Tracker
 
-An iPhone home-screen app for logging weights, sets and reps, with PRs, progress charts, a rest timer and a bodyweight log. It works offline. Cloud sync through Firebase is optional.
+An iPhone home-screen app for logging weights, sets and reps, with PRs, progress charts, strength levels, calorie and protein targets, a rest timer, and bodyweight and body-measurement logs. It works offline. Cloud sync through Firebase is optional. Anyone you send the link to gets their own setup and their own data.
 
 - **Logging:** total lbs, plates per side (with a plate picker), stack plates / pin #, per-dumbbell weight, bodyweight + added weight, and cardio (minutes / avg HR)
 - **Set types:** warm-up, working and drop sets, supersets, and RIR for each set
-- **Routines:** Upper A, Lower A, Zone 2, Upper B and Lower B come preloaded from your current lifts. Each workout pre-fills with your numbers from last time.
+- **First open:** a short setup (sex, age, weight, height, goal, activity) and a starter plan: Upper / Lower, Push / Pull / Legs, Full Body A / B, or empty. Each workout pre-fills with your numbers from last time.
 - **Progress:** an estimated 1-rep max chart for each exercise, your PRs (best e1RM, heaviest set, most reps) and every past session
 - **Rest timer:** starts on its own when you check off a set. It skips the rest between superset partners and before a drop set.
+- **Strength level:** Beginner to Elite for bench, squat, deadlift, OHP, RDL, leg press, pulldown, pull-ups, DB press, curls and hip thrust, scaled to your sex and bodyweight from StrengthLevel.com averages.
+- **Daily targets:** calories from Mifflin-St Jeor × activity, adjusted for your goal (lose fat, recomp, build muscle, maintain), plus protein, carbs and fat. After 2 weeks of weigh-ins it compares your real weekly rate with the goal and suggests an adjustment.
+- **Body:** bodyweight with a 7-day average, tape measurements in cm or inches, and a US Navy body-fat estimate.
 
 ---
 
@@ -57,7 +60,8 @@ Estimated 1-rep max uses the Epley formula on working sets of 15 reps or fewer. 
 
 - **No rest alert while the phone is locked.** iPhone web apps can't schedule local notifications. The app keeps the screen awake during a workout (needs iOS 18.4 or later), flashes the timer green and beeps. The beep doesn't play when the phone is on silent.
 - **Deleting the Home Screen icon can delete the local data.** That's why sync and backups exist.
-- The starter routines (exercise order, sets and rep targets) were built from the lifts and numbers you mentioned, not from your written plan. Edit them to match.
+- The starter routines are starting points. Edit them to match your own plan.
+- Strength levels, calorie targets and body fat are estimates. Strength standards for machines vary with the machine, so leg press and pulldown levels are rough. Let your weekly weight trend decide calories.
 
 ## Updating the app later
 

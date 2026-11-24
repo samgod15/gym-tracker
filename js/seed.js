@@ -34,6 +34,7 @@ export const SEED_EXERCISES = [
   E('ex-zone2', 'Zone 2 cardio', 'cardio', { rest: 0, muscle: 'Cardio' }),
   // Library extras
   E('ex-db-shoulder-press', 'Seated DB shoulder press', 'dumbbell', { rest: 120, muscle: 'Shoulders' }),
+  E('ex-ohp', 'Overhead press (barbell)', 'plates', { base: 45, rest: 150, muscle: 'Shoulders' }),
   E('ex-db-bench', 'Flat DB press', 'dumbbell', { rest: 150, muscle: 'Chest' }),
   E('ex-bench', 'Bench press (barbell)', 'plates', { base: 45, rest: 180, muscle: 'Chest' }),
   E('ex-pec-deck', 'Pec deck', 'total', { rest: 75, muscle: 'Chest' }),
@@ -101,43 +102,60 @@ export const SEED_ROUTINES = [
   },
 ];
 
-let sid = 0;
-const S = (fields) => ({ id: `seed-s${++sid}`, type: 'work', weight: null, plates: [], count: null, reps: null, rir: null, minutes: null, hr: null, done: true, doneAt: null, ...fields });
+// Starter plans offered to every new user. Routine ids are fixed per plan so two phones that pick
+// the same plan merge cleanly when they sync.
+const R = (id, name, order, items) => ({ id, name, order, items, updatedAt: 1, _dirty: 0 });
 
-// Numbers Sam reported in Nov 2026, stored as one "baseline" session so prefill and charts have a start point.
-function baselineWorkout() {
-  const t = new Date('2026-11-21T18:00:00').getTime();
-  const entry = (exerciseId, sets) => ({ exerciseId, group: null, sets: sets.map((s) => S({ ...s, doneAt: t })) });
-  return {
-    id: 'wo-baseline-2026-11', name: 'Baseline (numbers from chat)', routineId: null,
-    startedAt: t, endedAt: t + 60 * 60000, notes: 'Imported starting numbers. Edit or delete anytime.',
-    updatedAt: 1, _dirty: 0,
-    entries: [
-      entry('ex-incline-db-press', [{ weight: 50, reps: 8 }, { weight: 55, reps: 7 }]),
-      entry('ex-pull-up', [{ weight: 0, reps: 6 }, { weight: 0, reps: 5 }]),
-      entry('ex-plate-chest-press', [{ plates: [45, 10], reps: 5 }, { plates: [45, 25], reps: 1 }]),
-      entry('ex-cs-row', [{ plates: [45, 35], reps: 8 }, { plates: [45, 35], reps: 7 }]),
-      entry('ex-lat-pulldown', [{ weight: 120, reps: 8 }, { weight: 130, reps: 7 }]),
-      entry('ex-cable-lateral', [{ count: 1, reps: 10 }, { count: 2, reps: 7 }, { count: 2, reps: 6 }]),
-      entry('ex-reverse-pec-deck', [{ weight: 20, reps: 10 }]),
-      entry('ex-oh-cable-tri', [{ weight: 40, reps: 10 }]),
-      entry('ex-incline-db-curl', [{ weight: 22.5, reps: 9 }, { weight: 22.5, reps: 8 }]),
-      entry('ex-cable-crunch', [{ weight: 45, reps: 8 }, { weight: 50, reps: 7 }]),
-      entry('ex-rdl', [{ plates: [45, 45], reps: 8 }, { plates: [45, 45, 10], reps: 7 }]),
-      entry('ex-leg-press', [{ plates: [45, 45, 45, 45, 45, 45], reps: 10 }, { plates: [45, 45, 45, 45, 45, 45, 45], reps: 5 }]),
-      entry('ex-seated-leg-curl', [{ count: 3, reps: 8 }, { count: 3, reps: 7 }]),
+export const TEMPLATES = {
+  upperlower: {
+    label: 'Upper / Lower',
+    desc: '4 lifting days plus an optional Zone 2 cardio day. Good if you can train 4 times a week.',
+    routines: SEED_ROUTINES,
+  },
+  ppl: {
+    label: 'Push / Pull / Legs',
+    desc: '3 days, or run it twice through for 6. Each muscle group gets its own day.',
+    routines: [
+      R('rt-push', 'Push', 1, [item('ex-bench', 3, '5–8'), item('ex-db-shoulder-press', 3, '8–10'), item('ex-incline-db-press', 3, '8–12'), item('ex-cable-lateral', 3, '12–15'), item('ex-tri-pushdown', 3, '10–12', 'A'), item('ex-oh-cable-tri', 3, '10–12', 'A')]),
+      R('rt-pull', 'Pull', 2, [item('ex-pull-up', 3, 'max'), item('ex-lat-pulldown', 3, '8–10'), item('ex-seated-cable-row', 3, '8–12'), item('ex-face-pull', 3, '12–15'), item('ex-incline-db-curl', 3, '8–12', 'A'), item('ex-hammer-curl', 3, '10–12', 'A')]),
+      R('rt-legs', 'Legs', 3, [item('ex-bb-squat', 3, '5–8'), item('ex-rdl', 3, '8–10'), item('ex-leg-press', 3, '10–12'), item('ex-seated-leg-curl', 3, '10–12'), item('ex-leg-extension', 3, '12–15'), item('ex-smith-calf', 4, '10–15')]),
     ],
-  };
-}
+  },
+  fullbody: {
+    label: 'Full Body A / B',
+    desc: '3 days a week, alternating A and B. Best for beginners or a busy schedule.',
+    routines: [
+      R('rt-full-a', 'Full Body A', 1, [item('ex-bb-squat', 3, '5–8'), item('ex-bench', 3, '5–8'), item('ex-seated-cable-row', 3, '8–12'), item('ex-db-shoulder-press', 2, '8–12'), item('ex-cable-crunch', 3, '10–15')]),
+      R('rt-full-b', 'Full Body B', 2, [item('ex-rdl', 3, '6–10'), item('ex-incline-db-press', 3, '8–12'), item('ex-lat-pulldown', 3, '8–12'), item('ex-leg-press', 3, '10–12'), item('ex-hammer-curl', 2, '10–12')]),
+    ],
+  },
+  empty: {
+    label: 'Start empty',
+    desc: 'No routines. Build your own from the exercise library.',
+    routines: [],
+  },
+};
 
+/**
+ * First launch: returns 'onboard' when this phone has no data yet (show the welcome flow),
+ * otherwise false. Phones that already have data (or got it from sync) are left alone.
+ */
 export async function seedIfNeeded() {
   if (await db.meta('seeded')) return false;
   const existingEx = await db.all('exercises', { includeDeleted: true });
-  if (!existingEx.length) {
-    await db.putRaw('exercises', SEED_EXERCISES, { silent: true });
-    await db.putRaw('routines', SEED_ROUTINES, { silent: true });
-    await db.putRaw('workouts', [baselineWorkout()], { silent: true });
+  if (existingEx.length) {
+    await db.setMeta('seeded', true);
+    return false;
   }
+  return 'onboard';
+}
+
+/** Called at the end of the welcome flow. */
+export async function seedNewUser(templateKey = 'upperlower') {
+  const existingEx = new Set((await db.all('exercises', { includeDeleted: true })).map((e) => e.id));
+  await db.putRaw('exercises', SEED_EXERCISES.filter((e) => !existingEx.has(e.id)), { silent: true });
+  const tpl = TEMPLATES[templateKey] || TEMPLATES.empty;
+  const existingRt = new Set((await db.all('routines', { includeDeleted: true })).map((r) => r.id));
+  await db.putRaw('routines', tpl.routines.filter((r) => !existingRt.has(r.id)), { silent: true });
   await db.setMeta('seeded', true);
-  return true;
 }

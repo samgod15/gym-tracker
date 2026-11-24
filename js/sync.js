@@ -91,12 +91,13 @@ export async function syncNow() {
         const snap = await F.getDocs(q);
         let maxSeen = lastPull;
         const incoming = [];
+        const incomingIds = new Set();
         snap.forEach((d) => {
           const data = d.data();
           const sa = data.syncedAt?.toMillis ? data.syncedAt.toMillis() : 0;
           if (sa > maxSeen) maxSeen = sa;
           delete data.syncedAt;
-          if (data.id) incoming.push(data);
+          if (data.id) { incoming.push(data); incomingIds.add(data.id); }
         });
         if (incoming.length) {
           const local = new Map((await db.all(store, { includeDeleted: true })).map((r) => [r.id, r]));
@@ -105,8 +106,10 @@ export async function syncNow() {
             .map((r) => ({ ...r, _dirty: 0 }));
           if (toWrite.length) { await db.putRaw(store, toWrite, { silent: true }); changed = true; }
         }
-        // 2) push local edits
-        const dirty = await db.dirty(store);
+        // 2) push local edits. The first sync for this account on this phone pushes everything, so
+        //    built-in exercises/routines (never "edited", so never dirty) reach the cloud too and a
+        //    new phone restoring from sync gets the routines its workouts belong to.
+        const dirty = lastPull ? await db.dirty(store) : (await db.all(store, { includeDeleted: true })).filter((r) => !incomingIds.has(r.id) || r._dirty);
         for (let i = 0; i < dirty.length; i += 400) {
           const chunk = dirty.slice(i, i + 400);
           const batch = F.writeBatch(fs);
