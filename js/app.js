@@ -10,9 +10,10 @@ import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, re
 import * as install from './install.js';
 import * as plan from './plan.js';
 import * as PP from './planparse.js';
+import * as coach from './coach.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.6.0';
+export const APP_VERSION = '1.7.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -45,6 +46,8 @@ async function loadAll() {
   S.bodyweight = bw.sort((a, b) => b.date.localeCompare(a.date));
   S.settings = settings;
   S.histIndex = null;
+  S.coach = null;
+  S.snooze = (await db.meta('coachSnooze', {})) || {};
   timer.setSound(settings.sound !== false);
 }
 
@@ -76,7 +79,7 @@ const titleEl = document.getElementById('title');
 const headRight = document.getElementById('head-right');
 const backBtn = document.getElementById('back');
 const ROOT_TABS = ['train', 'history', 'progress', 'body', 'welcome'];
-const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress', plan: '#/train' };
+const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress', plan: '#/train', coach: '#/train' };
 const navStack = []; // hashes visited inside the app, so Back can return to where you came from
 
 backBtn.addEventListener('click', () => {
@@ -102,7 +105,7 @@ async function render() {
   app.dataset.route = r.name;
   const views = {
     train: viewTrain, workout: viewWorkout, routine: viewRoutine, history: viewHistory, session: viewSession,
-    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings, welcome: viewWelcome, plan: viewPlan,
+    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings, welcome: viewWelcome, plan: viewPlan, coach: viewCoach,
   };
   const fn = views[r.name] || viewTrain;
   const same = r.name === lastRoute.name && r.id === lastRoute.id;
@@ -130,7 +133,7 @@ function afterRender() {
   fx.pulseLight('pr');
 }
 let lastRoute = {};
-const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress', plan: 'train' }[name] || name);
+const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress', plan: 'train', coach: 'train' }[name] || name);
 function setTitle(t) {
   const span = titleEl.querySelector('.title-text');
   if (span.textContent === t) return fitTitle();
@@ -308,6 +311,7 @@ async function viewTrain() {
         h('button', { class: 'btn primary small', onclick: () => install.showInstallGuide() }, 'Show me how'),
         h('button', { class: 'icon-btn', 'aria-label': 'Hide this tip', onclick: async () => { await db.setMeta('installDismissed', true); render(); } }, '✕'))) : null,
     hero,
+    S.settings.coachOnTrain === false ? null : coachTeaser(),
     planCard(),
     h('div', { class: 'section-head' }, h('h2', null, 'Routines'),
       h('button', { class: 'btn small ghost', onclick: () => go('#/routine/new') }, '+ New')),
@@ -460,6 +464,7 @@ function entryCard(entry, ei) {
         h('button', { class: 'icon-btn sm entry-remove', 'aria-label': `Remove ${ex.name} from this workout`, onclick: () => removeEntry(ei) }, TRASH())),
       entry.target ? h('span', { class: 'muted small' }, `Target ${entry.target}`) : null),
     h('div', { class: 'muted small last-line' }, lastText),
+    cw.endedAt ? null : nextHint(ex, entry),
     h('div', { class: `set-grid head ${isCardio ? 'cardio' : ''}` },
       h('span', null, 'Set'), h('span', null, unitHead), h('span', null, isCardio ? 'Avg HR' : 'Reps'), isCardio ? null : h('span', null, 'RIR'), h('span', null, h('span', { class: 'sr' }, 'Done'))),
     rows,
@@ -889,7 +894,7 @@ function exerciseForm(initial, onSaved) {
         h('label', { class: 'field' }, h('span', null, 'Notes (seat height, grip…)'), h('textarea', { rows: 2, oninput: (e) => (ex.notes = e.target.value) }, ex.notes || '')),
         h('button', { class: 'btn primary block', onclick: async () => {
           if (!ex.name.trim()) return toast('Give it a name');
-          const saved = await db.put('exercises', { ...ex, name: ex.name.trim(), id: ex.id || db.uid('ex-') });
+          const saved = await db.put('exercises', { ...ex, name: ex.name.trim(), muscle: ex.muscle || coach.guessMuscle(ex.name), id: ex.id || db.uid('ex-') });
           await loadAll();
           close();
           onSaved && onSaved(saved);
@@ -1176,7 +1181,7 @@ async function saveRoutinesFromPlan(days, mode, planRec) {
         if (!id) {
           const g = PP.guessLoadType(it.name);
           const ex = await db.put('exercises', { id: db.uid('ex-'), name: it.name, loadType: g.loadType, baseWeight: g.baseWeight, lbsPerPlate: null,
-            restSec: it.restSec ?? (g.loadType === 'cardio' ? 0 : S.settings.defaultRest), muscle: '', notes: '' });
+            restSec: it.restSec ?? (g.loadType === 'cardio' ? 0 : S.settings.defaultRest), muscle: coach.guessMuscle(it.name), notes: '' });
           id = ex.id; created.set(key, id);
         }
       }
@@ -1192,6 +1197,104 @@ async function saveRoutinesFromPlan(days, mode, planRec) {
 
 function openPlanSheet() {
   sheet(h('div', { class: 'stack plan-sheet' }, h('div', { class: 'muted small' }, planMeta(S.plan)), planPages()), { title: S.plan.name.replace(/\.pdf$/i, '') });
+}
+
+// ================================================================= COACH
+function coachData() {
+  if (S.coach) return S.coach;
+  S.coach = coach.analyze({
+    now: Date.now(), profile: S.profile, settings: S.settings, exercises: S.exercises, routines: S.routines,
+    workouts: S.workouts, bodyweight: S.bodyweight, measurements: S.measurements, nextRoutineId: nextRoutine()?.id,
+  });
+  return S.coach;
+}
+const visibleItems = () => coachData().items.filter((it) => !(S.snooze[it.id] > Date.now()));
+const AREA = { training: 'Training', nutrition: 'Diet', body: 'Body', planning: 'Planning' };
+
+async function snoozeItem(id) {
+  S.snooze = { ...S.snooze, [id]: Date.now() + 7 * 86400000 };
+  for (const [k, v] of Object.entries(S.snooze)) if (v < Date.now()) delete S.snooze[k];
+  await db.setMeta('coachSnooze', S.snooze);
+  render();
+  toast('Hidden for a week', '', { action: { label: 'Undo', run: async () => { delete S.snooze[id]; await db.setMeta('coachSnooze', S.snooze); render(); } } });
+}
+
+function runCoachAction(a) {
+  if (!a) return;
+  if (a.kind === 'route') go(a.to);
+  else if (a.kind === 'start') { const rt = S.routines.find((r) => r.id === a.routineId); if (rt) startFromRoutine(rt); }
+  else if (a.kind === 'profile') openProfileSheet();
+  else if (a.kind === 'measure') { go('#/body'); setTimeout(() => openMeasureSheet(), 150); }
+}
+
+function coachCard(it, { compact = false } = {}) {
+  const why = it.why ? h('details', { class: 'coach-why' }, h('summary', null, 'Why'), h('p', null, it.why)) : null;
+  const lines = !compact && it.list
+    ? h('div', { class: 'coach-list' }, it.list.map((l) => h('div', { class: 'coach-li' }, h('strong', null, l.name), h('span', null, l.text.replace(/^Try /, '')), h('span', { class: 'muted tiny' }, l.detail))))
+    : h('p', { class: 'coach-body' }, it.body);
+  return h('div', { class: `card coach-card tone-${it.tone}` },
+    h('div', { class: 'coach-top' }, h('span', { class: 'coach-area' }, compact ? AREA[it.area] || '' : ''), h('button', { class: 'link coach-hide', 'aria-label': `Hide “${it.title}” for a week`, onclick: () => snoozeItem(it.id) }, 'Not now')),
+    h('h3', { class: 'coach-title' }, it.title),
+    lines,
+    it.action || why ? h('div', { class: 'coach-actions' },
+      it.action ? h('button', { class: 'btn small primary', onclick: () => runCoachAction(it.action) }, it.action.label) : null, why) : null);
+}
+
+function coachTeaser() {
+  const items = visibleItems().filter((it) => it.id !== 'start'); // the hero card already offers the first workout
+  if (!items.length) return null;
+  const top = items.slice(0, 2);
+  return h('div', { class: 'stack coach-teaser' },
+    h('div', { class: 'section-head' }, h('h2', null, 'For you'),
+      h('button', { class: 'btn small ghost', onclick: () => go('#/coach') }, items.length > 2 ? `All ${items.length}` : 'Coach')),
+    top.map((it) => coachCard(it, { compact: true })));
+}
+
+async function viewCoach() {
+  setTitle('Coach');
+  const data = coachData();
+  const items = visibleItems();
+  const hidden = data.items.length - items.length;
+  const areas = ['training', 'nutrition', 'body', 'planning'];
+  const unlocked = data.unlocks.filter((u) => u.have >= u.need).length;
+  return h('div', { class: 'page stack' },
+    h('p', { class: 'muted' }, 'Built from your own workouts, weigh-ins and measurements. The more you log, the more specific it gets.'),
+    h('div', { class: 'card stack coach-level' },
+      h('div', { class: 'row between' }, h('h3', null, 'What the coach can see'), h('span', { class: 'muted small' }, `${unlocked} of ${data.unlocks.length}`)),
+      h('div', { class: 'level-bar coach-bar', role: 'img', 'aria-label': `${unlocked} of ${data.unlocks.length} unlocked` }, data.unlocks.map((u) => h('span', { class: `lseg ${u.have >= u.need ? 'on' : ''}` }))),
+      data.unlocks.map((u) => h('div', { class: `unlock ${u.have >= u.need ? 'done' : ''}` },
+        h('span', { class: 'unlock-mark', 'aria-hidden': 'true' }, u.have >= u.need ? '✓' : `${u.have}/${u.need}`),
+        h('span', null, u.label),
+        u.have >= u.need ? null : h('span', { class: 'muted tiny' }, u.hint)))),
+    items.length ? null : h('p', { class: 'muted' }, 'Nothing to change right now. Keep logging.'),
+    areas.map((a) => {
+      const list = items.filter((it) => it.area === a);
+      return list.length ? h('div', { class: 'stack' }, h('h2', { class: 'month' }, AREA[a]), list.map((it) => coachCard(it))) : null;
+    }),
+    hidden ? h('button', { class: 'link center', onclick: async () => { S.snooze = {}; await db.setMeta('coachSnooze', {}); render(); } }, `Show ${hidden} hidden suggestion${hidden === 1 ? '' : 's'}`) : null,
+    h('p', { class: 'muted tiny' }, 'Suggestions are general training and nutrition guidance from published research applied to your logs, not medical advice.'));
+}
+
+/** "Try 60 lb ea × 6–8" under an exercise in a live workout, with a button that fills it in. */
+function nextHint(ex, entry) {
+  const hist = historyFor(entry.exerciseId, S.current?.id);
+  if (!hist.length) return null;
+  const reps = /×\s*([^,]+)/.exec(entry.target || '')?.[1]?.trim() || coach.targetRepsFor(entry.exerciseId, hist, S.routines);
+  const nt = coach.nextTarget(ex, hist, reps, S.settings);
+  if (!nt || nt.kind === 'reps') return null;
+  const open = entry.sets.filter((x) => !x.done && x.type === 'work');
+  const a = nt.apply;
+  const already = a && open.length && open.every((x) => (a.weight != null && Number(x.weight) === a.weight) || (a.count != null && Number(x.count) === a.count) || (a.plates && calc.sumPlates(x.plates) === calc.sumPlates(a.plates)));
+  return h('div', { class: `next-hint kind-${nt.kind}` },
+    h('span', { class: 'next-text' }, h('strong', null, nt.title), h('span', { class: 'muted tiny' }, nt.detail)),
+    a && open.length && !already ? h('button', { class: 'btn small', onclick: () => {
+      for (const x of open) {
+        if (a.weight != null) x.weight = a.weight;
+        if (a.count != null) x.count = a.count;
+        if (a.plates) x.plates = [...a.plates];
+      }
+      saveNow(); rerender();
+    } }, 'Use') : null);
 }
 
 // ================================================================= HISTORY
@@ -1787,7 +1890,8 @@ async function viewSettings() {
       settingNum('Warm-up rest (seconds)', S.settings.warmupRest, (v) => set({ warmupRest: v })),
       toggle('Keep screen awake during workouts', S.settings.keepAwake, (v) => set({ keepAwake: v }),
         timer.wakeLockSupported() ? null : 'Not supported on this iOS version (needs iOS 18.4+). Set Auto-Lock to 5 min in iPhone Settings as a fallback.'),
-      toggle('Beep when rest is over', S.settings.sound !== false, (v) => set({ sound: v }), 'The beep is muted when your iPhone is on silent. The bar and the overhead light also flash green.')),
+      toggle('Beep when rest is over', S.settings.sound !== false, (v) => set({ sound: v }), 'The beep is muted when your iPhone is on silent. The bar and the overhead light also flash green.'),
+      toggle('Show coach suggestions on Train', S.settings.coachOnTrain !== false, (v) => set({ coachOnTrain: v }), 'The full list is always under Train → Coach.')),
     h('div', { class: 'card stack' }, h('h3', null, 'Theme'),
       h('div', { class: 'theme-grid', role: 'radiogroup', 'aria-label': 'Theme' }, Object.entries(fx.THEMES).map(([key, t]) => {
         const on = (S.settings.theme || fx.DEFAULT_THEME) === key;

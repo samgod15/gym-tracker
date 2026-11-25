@@ -11,6 +11,7 @@ An iPhone home-screen app for logging weights, sets and reps, with PRs, progress
 - **Daily targets:** calories from Mifflin-St Jeor × activity, adjusted for your goal (lose fat, recomp, build muscle, maintain), plus protein, carbs and fat. After 2 weeks of weigh-ins it compares your real weekly rate with the goal and suggests an adjustment.
 - **Body:** bodyweight with a 7-day average, tape measurements in cm or inches, and a US Navy body-fat estimate.
 - **Your plan:** add your program as a PDF (or a photo or screenshot of it). It shows page by page on the Train tab and from the **Plan** button during a workout, works offline, and syncs to your account.
+- **Coach:** suggestions built from your own logs that get more specific as you log more. It gives a next weight for each lift (with a one-tap **Use** in the workout), weekly sets per muscle and how often each is trained, plateau alerts, calorie changes from your real weight trend, protein per meal, waist-to-height ratio, and a week plan built from the days you usually train. Each suggestion has a **Why** with the research behind it.
 - **Plan → routines:** when the PDF has text, the app reads the workouts, exercises, sets, reps, supersets (A1/A2), rest and notes, matches them to your exercise library, and shows them for you to check before it creates the routines. Uploading a new plan replaces the routines made from the old one and keeps routines you built yourself. New users can pick **Use my own plan** during setup.
 
 ---
@@ -69,6 +70,7 @@ Estimated 1-rep max uses the Epley formula on working sets of 15 reps or fewer. 
 - **Reading routines needs a PDF with real text.** Scans and photos can be viewed but not read into routines (there's no text in them to read). Plans laid out as lists ("Bench press 3 x 8–10") or tables (Exercise / Sets / Reps) read best; a multi-week plan uses the first week's version of each day.
 - **Plan files up to 10 MB and 40 pages.** Sync stores the file in Firestore in 700 KB pieces, because Cloud Storage for Firebase now needs the paid Blaze plan. Firestore's free tier (1 GiB) is shared by everyone who signs in to your Firebase project.
 - The starter routines are starting points. Edit them to match your own plan.
+- **The coach is rules, not AI.** It runs on the phone, works offline and costs nothing. It applies published guidelines (ACSM progression, weekly-volume and frequency meta-analyses, Helms/Iraki rates of loss and gain, NICE waist-to-height) to your numbers. It isn't medical advice.
 - Strength levels, calorie targets and body fat are estimates. Strength standards for machines vary with the machine, so leg press and pulldown levels are rough. Let your weekly weight trend decide calories.
 
 ## Updating the app later
@@ -92,6 +94,7 @@ js/fx.js                 moving backgrounds and themes
 js/install.js            Add to Home Screen help
 js/plan.js               plan PDF/photo: import, page rendering, storage
 js/planparse.js          reads workouts, sets and reps out of a plan's text
+js/coach.js              personal suggestions: progression, volume, calories, body, schedule
 js/vendor/pdfjs/         pdf.js 6.2 (Mozilla, Apache-2.0) for showing PDFs
 js/firebase-config.js    ← paste your Firebase config here
 sw.js                    offline support
