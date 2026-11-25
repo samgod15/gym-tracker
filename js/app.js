@@ -9,9 +9,10 @@ import { lineChart } from './charts.js';
 import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, relTime } from './ui.js';
 import * as install from './install.js';
 import * as plan from './plan.js';
+import * as PP from './planparse.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.5.1';
+export const APP_VERSION = '1.6.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -334,12 +335,12 @@ function nextRoutine() {
 }
 
 async function startFromRoutine(rt) {
-  const entries = rt.items.filter((i) => S.exercises.has(i.exerciseId)).map((i) => buildEntry(i.exerciseId, i.sets, i.group, i.reps));
+  const entries = rt.items.filter((i) => S.exercises.has(i.exerciseId)).map((i) => buildEntry(i.exerciseId, i.sets, i.group, i.reps, i.note));
   await startWorkout({ name: rt.name, routineId: rt.id, entries });
 }
 
 /** New entry prefilled from the last time this exercise was done. */
-function buildEntry(exerciseId, targetSets = 3, group = null, targetReps = '') {
+function buildEntry(exerciseId, targetSets = 3, group = null, targetReps = '', note = '') {
   const ex = exById(exerciseId);
   const last = historyFor(exerciseId)[0];
   const lastWork = last ? last.entry.sets.filter((s) => s.done && s.type === 'work') : [];
@@ -349,7 +350,8 @@ function buildEntry(exerciseId, targetSets = 3, group = null, targetReps = '') {
     const src = lastWork[i] || lastWork[lastWork.length - 1];
     sets.push(newSet(src, ex));
   }
-  return { exerciseId, group: group || null, target: targetReps ? `${n} × ${targetReps}` : '', sets };
+  const target = [targetReps ? `${n} × ${targetReps}` : '', note || ''].filter(Boolean).join(', ');
+  return { exerciseId, group: group || null, target, sets };
 }
 
 function newSet(src, ex, type = 'work') {
@@ -839,10 +841,10 @@ async function deleteWorkout(id) {
 }
 
 // ================================================================= EXERCISE PICKER
-function pickExercise(onPick) {
+function pickExercise(onPick, initialTerm = '') {
   sheet((close) => {
     const list = h('div', { class: 'pick-list' });
-    const q = h('input', { class: 'search', type: 'search', placeholder: 'Search or type a new name', 'aria-label': 'Search exercises', oninput: () => draw() });
+    const q = h('input', { class: 'search', type: 'search', value: initialTerm, placeholder: 'Search or type a new name', 'aria-label': 'Search exercises', oninput: () => draw() });
     const draw = () => {
       const term = q.value.trim().toLowerCase();
       const matches = sortedExercises().filter((e) => !term || e.name.toLowerCase().includes(term) || (e.muscle || '').toLowerCase().includes(term));
@@ -931,7 +933,8 @@ async function viewRoutine(id) {
             h('label', { class: 'field mini' }, h('span', null, 'Sets'), numInput({ value: it.sets, decimal: false, label: 'Sets', onInput: (v) => (it.sets = v || 1) })),
             h('label', { class: 'field mini' }, h('span', null, 'Reps'), h('input', { value: it.reps || '', placeholder: '8–10', oninput: (e) => (it.reps = e.target.value) })),
             h('label', { class: 'field mini' }, h('span', null, 'Superset'),
-              h('select', { onchange: (e) => (it.group = e.target.value || null) }, ['', 'A', 'B', 'C', 'D'].map((g) => h('option', { value: g, selected: (it.group || '') === g ? 'selected' : null }, g || 'None'))))));
+              h('select', { onchange: (e) => (it.group = e.target.value || null) }, ['', 'A', 'B', 'C', 'D'].map((g) => h('option', { value: g, selected: (it.group || '') === g ? 'selected' : null }, g || 'None'))))),
+          h('label', { class: 'field mini' }, h('span', null, 'Note'), h('input', { value: it.note || '', placeholder: 'RPE 8, tempo 3-1-1…', oninput: (e) => (it.note = e.target.value) })));
       }) : h('p', { class: 'muted' }, 'No exercises yet.'),
       h('button', { class: 'btn ghost block', onclick: () => pickExercise((ex) => { rt.items.push({ exerciseId: ex.id, sets: 3, reps: '8–10', group: null }); draw(); }) }, '+ Add exercise'),
       h('button', { class: 'btn primary block', onclick: async () => {
@@ -975,28 +978,34 @@ function DOC_ICON() {
   return el;
 }
 
-function pickPlanFile() {
+function pickPlanFile(after = null) {
+  if (typeof after !== 'function') after = null; // used directly as an onclick handler, it gets the click event
   const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,image/*', style: { display: 'none' } });
-  input.addEventListener('change', () => { const f = input.files?.[0]; input.remove(); if (f) importPlanFile(f); });
+  input.addEventListener('change', () => { const f = input.files?.[0]; input.remove(); if (f) importPlanFile(f, after); });
   document.body.appendChild(input);
   input.click();
 }
 
-async function importPlanFile(file) {
+async function importPlanFile(file, after = null) {
+  if (typeof after !== 'function') after = null;
   const bad = plan.checkFile(file);
   if (bad) return toast(bad, 'err');
-  if (S.plan) {
+  if (S.plan && !after) {
     const ok = await confirmSheet(`Replace "${S.plan.name}" with "${file.name}"?`, { ok: 'Replace' });
     if (!ok) return;
   }
   const step = h('p', { class: 'muted' }, 'Reading file…');
   const close = sheet(h('div', { class: 'stack plan-progress' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), step), { title: 'Adding your plan' });
   try {
-    await plan.importPlan(file, (t) => (step.textContent = t));
+    const rec = await plan.importPlan(file, (t) => (step.textContent = t));
+    step.textContent = 'Looking for workouts…';
+    const found = await plan.readWorkouts(rec).catch((e) => { console.warn('plan read', e); return { days: [] }; });
     await loadAll();
     close();
-    toast(sync.status().user ? 'Plan saved. Syncing to your account.' : 'Plan saved on this phone');
+    if (after) { await after(rec, found); return; }
     go('#/plan');
+    if (found.days.length) openPlanReview(found, rec);
+    else toast(noWorkoutsMsg(found), '');
   } catch (e) {
     console.error(e);
     close();
@@ -1076,8 +1085,109 @@ async function viewPlan() {
           toast('Plan removed');
           render();
         } }, 'Remove'))),
+    /pdf/.test(p.type || '') ? h('div', { class: 'card plan-routines' },
+      h('div', { class: 'stack tight' },
+        h('strong', null, planRoutineCount() ? `${planRoutineCount()} routine${planRoutineCount() === 1 ? '' : 's'} made from this plan` : 'Turn this plan into routines'),
+        h('span', { class: 'muted small' }, 'Reads the workouts, exercises, sets and reps so they’re ready to start on the Train tab.')),
+      h('button', { class: 'btn small primary', onclick: () => readPlanIntoRoutines() }, planRoutineCount() ? 'Update' : 'Set up')) : null,
     h('p', { class: 'muted tiny' }, 'Tap a page to zoom in.'),
     planPages());
+}
+
+const planRoutineCount = () => (S.plan ? S.routines.filter((r) => r.fromPlan === S.plan.hash).length : 0);
+const noWorkoutsMsg = (found) => found.hasText === false
+  ? 'Plan saved. It looks like a scan or photo, so it can’t be read into routines. You can still view it here.'
+  : 'Plan saved, but no sets and reps were found to turn into routines. You can still view it here.';
+
+async function readPlanIntoRoutines() {
+  const step = h('p', { class: 'muted' }, 'Reading your plan…');
+  const close = sheet(h('div', { class: 'stack plan-progress' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), step), { title: 'Reading your plan' });
+  const found = await plan.readWorkouts(S.plan).catch((e) => { console.warn(e); return { days: [] }; });
+  close();
+  if (!found.days.length) return toast(noWorkoutsMsg(found).replace(/^Plan saved(, but|\.)\s*/i, '').replace(/^./, (c) => c.toUpperCase()));
+  openPlanReview(found, S.plan);
+}
+
+/** Show what was read from the plan; the person fixes anything off, then routines are made. */
+function openPlanReview(found, planRec, { onDone } = {}) {
+  const lib = [...S.exercises.values()].filter((e) => !e.deleted);
+  const days = found.days.map((d) => ({
+    name: PP.tidyName(d.name), include: true,
+    items: d.items.map((it) => {
+      const name = PP.tidyName(it.name);
+      return { ...it, name, match: it.cardio ? (lib.find((e) => e.loadType === 'cardio' && PP.similarity(name, e.name) >= 0.5) || PP.matchExercise(name, lib)?.ex || null) : (PP.matchExercise(name, lib)?.ex || null) };
+    }),
+  }));
+  const fromLast = S.routines.filter((r) => r.fromPlan);
+  let mode = fromLast.length ? 'plan' : realWorkouts().length ? 'add' : 'all';
+  sheet((close) => {
+    const wrap = h('div', { class: 'stack plan-review' });
+    const draw = () => {
+      const included = days.filter((d) => d.include && d.items.length);
+      const newCount = new Set(included.flatMap((d) => d.items.filter((i) => !i.match).map((i) => i.name.toLowerCase()))).size;
+      const modes = [
+        fromLast.length ? ['plan', `Replace the ${fromLast.length} routine${fromLast.length === 1 ? '' : 's'} from your last plan`, 'Routines you made yourself stay.'] : null,
+        ['all', 'Replace all my routines', 'Past workouts stay in History.'],
+        ['add', 'Add them next to my routines', null],
+      ].filter(Boolean);
+      fill(wrap,
+        h('p', { class: 'muted small' }, `Found ${days.length} workout${days.length === 1 ? '' : 's'} in “${planRec.name}”.${found.weeks > 1 ? ` It covers ${found.weeks} weeks; these are the first week’s workouts.` : ''} Check them over: tap an exercise to change what it’s matched to.`),
+        days.map((d, di) => h('div', { class: `card stack review-day ${d.include ? '' : 'off'}` },
+          h('div', { class: 'row gap' },
+            h('input', { type: 'checkbox', checked: d.include, 'aria-label': `Include ${d.name}`, onchange: (e) => { d.include = e.target.checked; draw(); } }),
+            h('input', { class: 'review-day-name', value: d.name, 'aria-label': 'Routine name', oninput: (e) => (d.name = e.target.value) })),
+          d.items.length ? h('div', { class: 'review-item head', 'aria-hidden': 'true' }, h('span', null, 'Exercise'), h('span', null, 'Sets'), h('span', null, 'Reps'), h('span')) : null,
+          d.items.map((it, ii) => h('div', { class: 'review-item' },
+            h('button', { class: 'review-ex', onclick: () => pickExercise((ex) => { it.match = ex; draw(); }, it.name) },
+              h('span', { class: 'review-name' }, it.name),
+              h('span', { class: `review-match ${it.match ? '' : 'new'}` }, it.match ? (it.match.name.toLowerCase() === it.name.toLowerCase() ? 'In your library' : `→ ${it.match.name}`) : 'New exercise'),
+              it.group || it.note ? h('span', { class: 'muted tiny' }, [it.group ? `Superset ${it.group}` : '', it.note].filter(Boolean).join(', ')) : null),
+            h('input', { class: 'num mini-num', inputmode: 'numeric', value: it.sets, 'aria-label': `${it.name} sets`, oninput: (e) => (it.sets = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 1))) }),
+            h('input', { class: 'mini-reps', value: it.reps, 'aria-label': `${it.name} reps`, oninput: (e) => (it.reps = e.target.value) }),
+            h('button', { class: 'icon-btn sm', 'aria-label': `Remove ${it.name}`, onclick: () => { d.items.splice(ii, 1); draw(); } }, '✕'))),
+          d.items.length ? null : h('p', { class: 'muted small' }, 'No exercises left in this one.'))),
+        h('div', { class: 'opt-list' }, modes.map(([k, label, hint]) => h('button', { class: `opt ${mode === k ? 'on' : ''}`, onclick: () => { mode = k; draw(); } },
+          h('strong', null, label), hint ? h('span', null, hint) : null))),
+        newCount ? h('p', { class: 'muted small' }, `${newCount} new exercise${newCount === 1 ? '' : 's'} will be added to your library. You can set how the weight is entered later in Progress → exercise → Edit.`) : null,
+        h('button', { class: 'btn primary block big-cta', disabled: included.length ? null : true, onclick: async () => {
+          const n = await saveRoutinesFromPlan(included, mode, planRec);
+          close();
+          toast(`${n} routine${n === 1 ? '' : 's'} ready on the Train tab`);
+          if (onDone) onDone(); else go('#/train');
+        } }, `Create ${included.length} routine${included.length === 1 ? '' : 's'}`),
+        h('button', { class: 'link center', onclick: () => { close(); if (onDone) onDone(); } }, 'Not now'));
+    };
+    draw();
+    return wrap;
+  }, { title: 'Set up routines from your plan' });
+}
+
+async function saveRoutinesFromPlan(days, mode, planRec) {
+  const created = new Map(); // new exercise name → id, so a lift used on two days is created once
+  const toRemove = mode === 'all' ? S.routines : mode === 'plan' ? S.routines.filter((r) => r.fromPlan) : [];
+  let order = mode === 'add' ? Math.max(0, ...S.routines.map((r) => r.order || 0)) + 1 : 1;
+  for (const d of days) {
+    const items = [];
+    for (const it of d.items) {
+      let id = it.match?.id;
+      if (!id) {
+        const key = it.name.toLowerCase();
+        id = created.get(key);
+        if (!id) {
+          const g = PP.guessLoadType(it.name);
+          const ex = await db.put('exercises', { id: db.uid('ex-'), name: it.name, loadType: g.loadType, baseWeight: g.baseWeight, lbsPerPlate: null,
+            restSec: it.restSec ?? (g.loadType === 'cardio' ? 0 : S.settings.defaultRest), muscle: '', notes: '' });
+          id = ex.id; created.set(key, id);
+        }
+      }
+      const isCardio = (it.match?.loadType || PP.guessLoadType(it.name).loadType) === 'cardio';
+      items.push({ exerciseId: id, sets: isCardio ? 1 : it.sets, reps: it.reps || '', group: it.group || null, note: it.note || '' });
+    }
+    await db.put('routines', { id: db.uid('rt-'), name: d.name.trim() || 'Workout', order: order++, items, fromPlan: planRec.hash });
+  }
+  for (const r of toRemove) await db.remove('routines', r.id);
+  await loadAll();
+  return days.length;
 }
 
 function openPlanSheet() {
@@ -1311,6 +1421,18 @@ async function viewWelcome() {
   setTitle('Welcome');
   if (S.seeded) { location.replace('#/train'); return h('div'); }
   const finish = async () => {
+    if (W.plan === 'mine') {
+      // pick the file inside this tap (iOS only opens the picker from a direct tap)
+      pickPlanFile(async (rec, found) => {
+        await seedNewUser('empty');
+        S.seeded = true;
+        await loadAll();
+        W.step = 0;
+        if (found.days.length) { location.replace('#/train'); openPlanReview(found, rec); }
+        else { location.replace('#/plan'); toast(noWorkoutsMsg(found)); }
+      });
+      return;
+    }
     await seedNewUser(W.plan);
     S.seeded = true;
     await loadAll();
@@ -1348,8 +1470,10 @@ async function viewWelcome() {
     h('p', { class: 'muted' }, 'You can edit every routine, or build your own later.'),
     h('div', { class: 'opt-list' }, Object.entries(TEMPLATES).map(([k, t]) => h('button', { class: `opt plan ${W.plan === k ? 'on' : ''}`, onclick: () => { W.plan = k; render(); } },
       h('strong', null, t.label), h('span', null, t.desc),
-      t.routines.length ? h('span', { class: 'plan-days' }, t.routines.map((r) => r.name).join(', ')) : null))),
-    h('button', { class: 'btn primary block big-cta', onclick: finish }, 'Start training'),
+      t.routines.length ? h('span', { class: 'plan-days' }, t.routines.map((r) => r.name).join(', ')) : null)),
+      h('button', { class: `opt plan ${W.plan === 'mine' ? 'on' : ''}`, onclick: () => { W.plan = 'mine'; render(); } },
+        h('strong', null, 'Use my own plan'), h('span', null, 'Upload your program as a PDF. The app reads the workouts, sets and reps into routines you can check first.'))),
+    h('button', { class: 'btn primary block big-cta', onclick: finish }, W.plan === 'mine' ? 'Choose my plan PDF' : 'Start training'),
     h('button', { class: 'link center', onclick: () => { W.step = 1; render(); } }, 'Back'));
 }
 

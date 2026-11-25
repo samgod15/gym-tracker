@@ -593,3 +593,19 @@ input[type="date"] { -webkit-appearance: none; appearance: none; }
 .plan-card > .btn { flex: none; }
 .plan-card.empty { align-items: flex-start; }
 .plan-card.empty > .btn { align-self: center; }
+
+/* ------------------------------------------------------------ plan → routines review */
+.plan-routines { display: flex; align-items: center; gap: 12px; justify-content: space-between; }
+.plan-review .review-day.off { opacity: .55; }
+.review-day > .row { align-items: center; }
+.review-day input[type=checkbox] { width: 22px; height: 22px; flex: none; accent-color: var(--plate-blue); }
+.review-day-name { flex: 1; min-width: 0; font-family: var(--display); font-size: 22px; font-weight: 780; background: transparent; border: 1px solid transparent; border-radius: var(--r-sm); padding: 4px 6px; color: var(--chalk); }
+.review-day-name:focus { border-color: var(--steel-3); background: var(--steel-2); }
+.review-item { display: grid; grid-template-columns: minmax(0, 1fr) 44px 64px 32px; gap: 6px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.review-ex { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; background: none; border: 0; padding: 2px 0; color: inherit; font: inherit; min-width: 0; }
+.review-name { font-weight: 650; overflow-wrap: anywhere; }
+.review-match { font-size: 12.5px; color: var(--muted); }
+.review-match.new { color: var(--plate-blue-hi, var(--plate-blue)); font-weight: 650; }
+.mini-num, .mini-reps { min-height: 40px; padding: 0 4px; text-align: center; font-size: 16px; }
+.review-item.head { font-size: 12px; color: var(--muted); font-weight: 600; padding: 2px 0 0; border-top: 0; }
+.review-item.head span:nth-child(2), .review-item.head span:nth-child(3) { text-align: center; }

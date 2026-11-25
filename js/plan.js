@@ -4,6 +4,7 @@
 // original file to Firestore in chunks so another phone signed in to the same account gets it too.
 
 import * as db from './db.js';
+import { linesFromItems, parsePlan } from './planparse.js';
 
 export const MAX_BYTES = 10 * 1024 * 1024; // keeps everyone well inside Firestore's free 1 GiB
 export const MAX_PAGES = 40;
@@ -154,3 +155,36 @@ export async function gc() {
   const drop = keys.filter((k) => { const h = k.split(':')[1]; return h !== keep; });
   if (drop.length) await db.deleteBlobs(drop);
 }
+
+/** The text of each page (pdf.js text items). Photos and scanned PDFs have none. */
+export async function readText(plan) {
+  if (!plan || !isPdf(plan.type, plan.name)) return [];
+  const blob = await db.getBlob(`file:${plan.hash}`);
+  if (!blob) return [];
+  const lib = await pdfjs();
+  const task = lib.getDocument({
+    data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false,
+    standardFontDataUrl: `${PDFJS}standard_fonts/`, wasmUrl: `${PDFJS}wasm/`,
+  });
+  const doc = await task.promise;
+  const pages = [];
+  try {
+    for (let i = 1; i <= Math.min(doc.numPages, MAX_PAGES); i++) {
+      const page = await doc.getPage(i);
+      const tc = await page.getTextContent();
+      pages.push(tc.items);
+      page.cleanup();
+    }
+  } finally {
+    task.destroy();
+  }
+  return pages;
+}
+
+/** Workouts found in the plan: { days, weeks, hasText }. */
+export async function readWorkouts(plan) {
+  const pages = await readText(plan);
+  const lines = linesFromItems(pages);
+  return { ...parsePlan(lines), hasText: lines.length > 3 };
+}
+
