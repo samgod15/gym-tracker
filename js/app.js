@@ -8,9 +8,10 @@ import * as fx from './fx.js';
 import { lineChart } from './charts.js';
 import { h, fill, toast, sheet, confirmSheet, fmtDate, fmtDuration, debounce, relTime } from './ui.js';
 import * as install from './install.js';
+import * as plan from './plan.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.4.0';
+export const APP_VERSION = '1.5.0';
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -31,9 +32,10 @@ const exById = (id) => S.exercises.get(id) || { id, name: 'Deleted exercise', lo
 const sortedExercises = () => [...S.exercises.values()].sort((a, b) => a.name.localeCompare(b.name));
 
 async function loadAll() {
-  const [ex, rt, wo, bw, settings, profile, ms] = await Promise.all([
-    db.all('exercises'), db.all('routines'), db.all('workouts'), db.all('bodyweight'), db.getSettings(), db.getProfile(), db.all('measurements'),
+  const [ex, rt, wo, bw, settings, profile, ms, planRec] = await Promise.all([
+    db.all('exercises'), db.all('routines'), db.all('workouts'), db.all('bodyweight'), db.getSettings(), db.getProfile(), db.all('measurements'), plan.getPlan(),
   ]);
+  S.plan = planRec;
   S.profile = profile;
   S.measurements = ms.sort((a, b) => b.date.localeCompare(a.date));
   S.exercises = new Map(ex.map((e) => [e.id, e]));
@@ -73,7 +75,7 @@ const titleEl = document.getElementById('title');
 const headRight = document.getElementById('head-right');
 const backBtn = document.getElementById('back');
 const ROOT_TABS = ['train', 'history', 'progress', 'body', 'welcome'];
-const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress' };
+const PARENT = { settings: '#/train', workout: '#/train', routine: '#/train', session: '#/history', exercise: '#/progress', plan: '#/train' };
 const navStack = []; // hashes visited inside the app, so Back can return to where you came from
 
 backBtn.addEventListener('click', () => {
@@ -99,7 +101,7 @@ async function render() {
   app.dataset.route = r.name;
   const views = {
     train: viewTrain, workout: viewWorkout, routine: viewRoutine, history: viewHistory, session: viewSession,
-    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings, welcome: viewWelcome,
+    progress: viewProgress, exercise: viewExercise, body: viewBody, settings: viewSettings, welcome: viewWelcome, plan: viewPlan,
   };
   const fn = views[r.name] || viewTrain;
   const same = r.name === lastRoute.name && r.id === lastRoute.id;
@@ -127,7 +129,7 @@ function afterRender() {
   fx.pulseLight('pr');
 }
 let lastRoute = {};
-const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress' }[name] || name);
+const tabFor = (name) => ({ workout: 'train', routine: 'train', session: 'history', exercise: 'progress', plan: 'train' }[name] || name);
 function setTitle(t) {
   const span = titleEl.querySelector('.title-text');
   if (span.textContent === t) return fitTitle();
@@ -305,6 +307,7 @@ async function viewTrain() {
         h('button', { class: 'btn primary small', onclick: () => install.showInstallGuide() }, 'Show me how'),
         h('button', { class: 'icon-btn', 'aria-label': 'Hide this tip', onclick: async () => { await db.setMeta('installDismissed', true); render(); } }, '✕'))) : null,
     hero,
+    planCard(),
     h('div', { class: 'section-head' }, h('h2', null, 'Routines'),
       h('button', { class: 'btn small ghost', onclick: () => go('#/routine/new') }, '+ New')),
     S.routines.length ? S.routines.map((rt) => {
@@ -375,6 +378,9 @@ async function startWorkout({ name, routineId, entries }) {
 
 // ================================================================= WORKOUT EDITOR
 const saveCurrent = debounce(() => flushCurrent(), 400);
+/** For taps (add/remove/check a set): write straight away so closing the app right after can't lose it. */
+const saveNow = () => flushCurrent();
+addEventListener('pagehide', () => flushCurrent());
 async function flushCurrent() {
   const cur = S.current;
   if (!cur) return;
@@ -407,13 +413,15 @@ async function viewWorkout(id) {
       nameInput,
       h('div', { class: 'row between' },
         h('span', { class: 'muted' }, live ? h('span', null, 'Elapsed ', elapsed) : fmtDate(cw.startedAt, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' })),
-        live
-          ? h('button', { class: 'btn primary small', onclick: () => finishWorkout() }, 'Finish')
-          : h('button', { class: 'btn primary small', onclick: async () => { await saveFinishedEdit(); } }, 'Save'))),
+        h('div', { class: 'row gap' },
+          S.plan ? h('button', { class: 'btn small ghost', onclick: () => openPlanSheet() }, 'Plan') : null,
+          live
+            ? h('button', { class: 'btn primary small', onclick: () => finishWorkout() }, 'Finish')
+            : h('button', { class: 'btn primary small', onclick: async () => { await saveFinishedEdit(); } }, 'Save')))),
     blocks.map((b) => b.group && b.entries.length > 1
       ? h('div', { class: 'superset' }, h('div', { class: 'superset-label' }, `Superset ${b.group}`), b.entries.map(({ entry, index }) => entryCard(entry, index)))
       : b.entries.map(({ entry, index }) => entryCard(entry, index))),
-    h('button', { class: 'btn ghost block', onclick: () => pickExercise((ex) => { cw.entries.push(buildEntry(ex.id, 3)); saveCurrent(); rerender(); }) }, '+ Add exercise'),
+    h('button', { class: 'btn ghost block', onclick: () => pickExercise((ex) => { cw.entries.push(buildEntry(ex.id, 3)); saveNow(); rerender(); }) }, '+ Add exercise'),
     h('label', { class: 'field' }, h('span', null, 'Notes'),
       h('textarea', { rows: 3, placeholder: 'How it felt, machine settings…', oninput: (e) => { cw.notes = e.target.value; saveCurrent(); } }, cw.notes || '')),
     live
@@ -438,22 +446,114 @@ function entryCard(entry, ei) {
   const rows = entry.sets.map((s, si) => {
     if (s.type === 'work') workNo++;
     const prev = lastWork[si] || null;
-    return setRow(ex, entry, ei, s, si, s.type === 'work' ? String(workNo) : s.type === 'warmup' ? 'W' : 'D', prev);
+    const row = setRow(ex, entry, ei, s, si, s.type === 'work' ? String(workNo) : s.type === 'warmup' ? 'W' : 'D', prev);
+    return swipeToDelete(row, () => { try { localStorage.setItem('gt-swiped', '1'); } catch {} removeSet(entry, entry.sets.indexOf(s)); });
   });
 
   return h('section', { class: `card entry ${entry.group ? 'in-superset' : ''}`, id: `entry-${ei}` },
     h('div', { class: 'entry-head' },
-      h('button', { class: 'entry-name', onclick: () => entryMenu(ei) },
-        h('span', null, ex.name), entry.group ? h('span', { class: 'pill' }, entry.group) : null, h('span', { class: 'chev', 'aria-hidden': 'true' }, '⋯')),
+      h('div', { class: 'entry-title-row' },
+        h('button', { class: 'entry-name', onclick: () => entryMenu(ei) },
+          h('span', null, ex.name), entry.group ? h('span', { class: 'pill' }, entry.group) : null, h('span', { class: 'chev', 'aria-hidden': 'true' }, '⋯')),
+        h('button', { class: 'icon-btn sm entry-remove', 'aria-label': `Remove ${ex.name} from this workout`, onclick: () => removeEntry(ei) }, TRASH())),
       entry.target ? h('span', { class: 'muted small' }, `Target ${entry.target}`) : null),
     h('div', { class: 'muted small last-line' }, lastText),
     h('div', { class: `set-grid head ${isCardio ? 'cardio' : ''}` },
       h('span', null, 'Set'), h('span', null, unitHead), h('span', null, isCardio ? 'Avg HR' : 'Reps'), isCardio ? null : h('span', null, 'RIR'), h('span', null, h('span', { class: 'sr' }, 'Done'))),
     rows,
     h('div', { class: 'entry-actions' },
-      h('button', { class: 'chip-btn', onclick: () => { const src = entry.sets.filter((x) => x.type === 'work').pop(); entry.sets.push(newSet(src, ex)); saveCurrent(); rerender(); } }, '+ Set'),
-      isCardio ? null : h('button', { class: 'chip-btn', onclick: () => { const firstWork = entry.sets.findIndex((x) => x.type !== 'warmup'); entry.sets.splice(firstWork < 0 ? entry.sets.length : firstWork, 0, newSet(null, ex, 'warmup')); saveCurrent(); rerender(); } }, '+ Warm-up'),
-      isCardio ? null : h('button', { class: 'chip-btn', onclick: () => addDrop(entry, ex) }, '+ Drop')));
+      h('button', { class: 'chip-btn', onclick: () => { const src = entry.sets.filter((x) => x.type === 'work').pop(); entry.sets.push(newSet(src, ex)); saveNow(); rerender(); } }, '+ Set'),
+      isCardio ? null : h('button', { class: 'chip-btn', onclick: () => { const firstWork = entry.sets.findIndex((x) => x.type !== 'warmup'); entry.sets.splice(firstWork < 0 ? entry.sets.length : firstWork, 0, newSet(null, ex, 'warmup')); saveNow(); rerender(); } }, '+ Warm-up'),
+      isCardio ? null : h('button', { class: 'chip-btn', onclick: () => addDrop(entry, ex) }, '+ Drop'),
+      entry.sets.length ? h('button', { class: 'chip-btn minus', 'aria-label': 'Remove the last set', onclick: () => removeSet(entry, entry.sets.length - 1) }, '− Set') : null),
+    ei === 0 && entry.sets.length && !localStorage.getItem('gt-swiped') ? h('div', { class: 'muted tiny swipe-hint' }, 'Tip: swipe any set left to delete it.') : null);
+}
+
+const TRASH = () => {
+  const el = h('span', { class: 'ico', 'aria-hidden': 'true' });
+  el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
+  return el;
+};
+
+const SET_NAME = { work: 'Set', warmup: 'Warm-up set', drop: 'Drop set' };
+
+/** Delete one set from the current workout, with Undo. */
+function removeSet(entry, si) {
+  const cw = S.current;
+  if (!cw || si < 0 || si >= entry.sets.length) return;
+  const [gone] = entry.sets.splice(si, 1);
+  saveNow();
+  rerender();
+  toast(`${SET_NAME[gone.type] || 'Set'} removed`, '', { action: { label: 'Undo', run: () => {
+    if (S.current !== cw || !cw.entries.includes(entry)) return;
+    entry.sets.splice(Math.min(si, entry.sets.length), 0, gone);
+    saveNow(); rerender();
+  } } });
+}
+
+/** Take an exercise out of the current workout, with Undo. */
+function removeEntry(ei) {
+  const cw = S.current;
+  const [gone] = cw.entries.splice(ei, 1);
+  saveNow();
+  rerender();
+  toast(`${exById(gone.exerciseId).name} removed`, '', { action: { label: 'Undo', run: () => {
+    if (S.current !== cw) return;
+    cw.entries.splice(Math.min(ei, cw.entries.length), 0, gone);
+    saveNow(); rerender();
+  } } });
+}
+
+/** Swipe a set row left to reveal Delete; a long swipe deletes straight away. */
+function swipeToDelete(row, onDelete) {
+  const del = h('button', { class: 'swipe-del', tabindex: '-1', 'aria-hidden': 'true', onclick: () => onDelete() }, 'Delete');
+  const wrap = h('div', { class: 'swipe-wrap' }, del, row);
+  let x0 = 0; let y0 = 0; let dx = 0; let mode = null; let open = false; let pid = null;
+  const OPEN = -92; const FULL = -190;
+  const place = (x, animate) => {
+    row.style.transition = animate ? 'transform .25s var(--ease-out)' : 'none';
+    row.style.transform = x ? `translateX(${x}px)` : '';
+    del.style.opacity = String(Math.min(1, -x / 70));
+    wrap.classList.toggle('swiping', x < 0);
+  };
+  const close = () => { open = false; place(0, true); };
+  row.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; mode = null; pid = e.pointerId;
+  });
+  row.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== pid) return;
+    const mx = e.clientX - x0; const my = e.clientY - y0;
+    if (!mode) {
+      if (Math.abs(mx) < 10 && Math.abs(my) < 10) return;
+      mode = Math.abs(mx) > Math.abs(my) * 1.2 ? 'swipe' : 'scroll';
+      if (mode === 'swipe') { try { row.setPointerCapture(pid); } catch {} document.activeElement?.blur?.(); }
+    }
+    if (mode !== 'swipe') return;
+    dx = Math.min(0, (open ? OPEN : 0) + mx);
+    place(Math.max(dx, -260), false);
+  });
+  const end = (e) => {
+    if (e.pointerId !== pid) return;
+    pid = null;
+    if (mode !== 'swipe') return;
+    // swallow the click that follows a swipe so it doesn't tick the set or open a menu
+    const swallow = (c) => { c.stopPropagation(); c.preventDefault(); };
+    row.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => row.removeEventListener('click', swallow, { capture: true }), 350);
+    if (dx <= FULL) { place(-400, true); setTimeout(onDelete, 160); return; }
+    if (dx <= OPEN / 2) { open = true; place(OPEN, true); return; }
+    close();
+  };
+  row.addEventListener('pointerup', end);
+  row.addEventListener('pointercancel', (e) => { if (e.pointerId === pid) { pid = null; close(); } });
+  // Tapping anywhere else closes an open row
+  const outside = (e) => {
+    if (!wrap.isConnected) { document.removeEventListener('pointerdown', outside, { capture: true }); return; }
+    if (open && !wrap.contains(e.target)) close();
+  };
+  document.addEventListener('pointerdown', outside, { capture: true });
+  return wrap;
 }
 
 function addDrop(entry, ex) {
@@ -468,7 +568,7 @@ function addDrop(entry, ex) {
   if (ex.loadType === 'stack' && src?.count) d.count = Math.max(1, src.count - 1);
   if (ex.loadType === 'plates' && src?.plates?.length) d.plates = src.plates.slice(0, -1);
   entry.sets.splice(at + 1, 0, d);
-  saveCurrent();
+  saveNow();
   rerender();
 }
 
@@ -529,7 +629,7 @@ function toggleDone(ex, entry, ei, s, si) {
   const cw = S.current;
   if (s.done) {
     s.done = false; s.doneAt = null; s.pr = [];
-    saveCurrent(); rerender(); return;
+    saveNow(); rerender(); return;
   }
   // fill blanks from placeholders (previous session) so one tap logs "same as last time"
   if (ex.loadType !== 'cardio' && s.reps === null) {
@@ -570,7 +670,7 @@ function toggleDone(ex, entry, ei, s, si) {
     toast(`Superset → ${exById(cw.entries[d.next].exerciseId).name}`);
     setTimeout(() => document.getElementById(`entry-${d.next}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
   }
-  saveCurrent();
+  saveNow();
   rerender();
 }
 
@@ -596,9 +696,9 @@ function nextUpLabel(ei, si) {
 function setMenu(ex, entry, s, si) {
   sheet((close) => h('div', { class: 'stack' },
     h('div', { class: 'seg' }, [['warmup', 'Warm-up'], ['work', 'Working'], ['drop', 'Drop set']].map(([k, label]) =>
-      h('button', { class: `seg-btn ${s.type === k ? 'on' : ''}`, onclick: () => { s.type = k; if (k !== 'work') s.pr = []; saveCurrent(); close(); rerender(); } }, label))),
+      h('button', { class: `seg-btn ${s.type === k ? 'on' : ''}`, onclick: () => { s.type = k; if (k !== 'work') s.pr = []; saveNow(); close(); rerender(); } }, label))),
     h('p', { class: 'muted small' }, 'Warm-ups and drop sets never count toward PRs or charts.'),
-    h('button', { class: 'btn danger-ghost block', onclick: () => { entry.sets.splice(si, 1); saveCurrent(); close(); rerender(); } }, 'Delete this set')),
+    h('button', { class: 'btn danger-ghost block', onclick: () => { close(); removeSet(entry, entry.sets.indexOf(s)); } }, 'Delete this set')),
   { title: 'Set options' });
 }
 
@@ -607,7 +707,7 @@ function entryMenu(ei) {
   const entry = cw.entries[ei];
   const ex = exById(entry.exerciseId);
   sheet((close) => {
-    const done = () => { saveCurrent(); close(); rerender(); };
+    const done = () => { saveNow(); close(); rerender(); };
     const restInput = numInput({ value: ex.restSec ?? S.settings.defaultRest, label: 'Rest seconds', decimal: false, onInput: () => {} });
     return h('div', { class: 'stack' },
       h('div', { class: 'field' }, h('span', null, 'Superset with neighbours'),
@@ -621,7 +721,7 @@ function entryMenu(ei) {
         h('button', { class: 'btn ghost grow', disabled: ei === cw.entries.length - 1 ? true : null, onclick: () => { [cw.entries[ei + 1], cw.entries[ei]] = [cw.entries[ei], cw.entries[ei + 1]]; done(); } }, '↓ Move down')),
       h('button', { class: 'btn ghost block', onclick: () => { close(); pickExercise((nx) => { const fresh = buildEntry(nx.id, entry.sets.filter((x) => x.type === 'work').length || 3, entry.group); cw.entries[ei] = fresh; saveCurrent(); rerender(); }); } }, 'Swap for another exercise'),
       ex.missing ? null : h('button', { class: 'btn ghost block', onclick: () => { close(); flushCurrent().then(() => go(`#/exercise/${ex.id}`)); } }, 'Progress & settings for this exercise'),
-      h('button', { class: 'btn danger-ghost block', onclick: () => { cw.entries.splice(ei, 1); done(); } }, 'Remove from workout'));
+      h('button', { class: 'btn danger-ghost block', onclick: () => { close(); removeEntry(ei); } }, 'Remove from workout'));
   }, { title: ex.name });
 }
 
@@ -651,7 +751,7 @@ function platePicker(ex, entry, s) {
     };
     draw();
     return wrap;
-  }, { title: `${ex.name}`, onClose: () => { saveCurrent(); rerender(); } });
+  }, { title: `${ex.name}`, onClose: () => { saveNow(); rerender(); } });
 }
 
 async function finishWorkout() {
@@ -851,6 +951,137 @@ async function viewRoutine(id) {
   };
   draw();
   return wrap;
+}
+
+// ================================================================= TRAINING PLAN (PDF / photo)
+const planMeta = (p) => `${p.pages} page${p.pages === 1 ? '' : 's'}, added ${fmtDate(p.addedAt || p.updatedAt, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+
+function planCard() {
+  if (S.plan) {
+    return h('button', { class: 'card plan-card', onclick: () => go('#/plan') },
+      h('span', { class: 'plan-ico', 'aria-hidden': 'true' }, DOC_ICON()),
+      h('span', { class: 'plan-text' }, h('span', { class: 'card-title' }, 'Your plan'), h('span', { class: 'muted small ellip' }, S.plan.name)),
+      h('span', { class: 'btn small ghost' }, 'Open'));
+  }
+  return h('div', { class: 'card plan-card empty' },
+    h('span', { class: 'plan-ico', 'aria-hidden': 'true' }, DOC_ICON()),
+    h('span', { class: 'plan-text' }, h('span', { class: 'card-title' }, 'Have a written plan?'), h('span', { class: 'muted small' }, 'Add the PDF or a photo so it’s one tap away at the gym.')),
+    h('button', { class: 'btn small primary', onclick: pickPlanFile }, 'Add plan'));
+}
+
+function DOC_ICON() {
+  const el = h('span', { class: 'ico' });
+  el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>';
+  return el;
+}
+
+function pickPlanFile() {
+  const input = h('input', { type: 'file', accept: 'application/pdf,.pdf,image/*', style: { display: 'none' } });
+  input.addEventListener('change', () => { const f = input.files?.[0]; input.remove(); if (f) importPlanFile(f); });
+  document.body.appendChild(input);
+  input.click();
+}
+
+async function importPlanFile(file) {
+  const bad = plan.checkFile(file);
+  if (bad) return toast(bad, 'err');
+  if (S.plan) {
+    const ok = await confirmSheet(`Replace "${S.plan.name}" with "${file.name}"?`, { ok: 'Replace' });
+    if (!ok) return;
+  }
+  const step = h('p', { class: 'muted' }, 'Reading file…');
+  const close = sheet(h('div', { class: 'stack plan-progress' }, h('div', { class: 'spinner', 'aria-hidden': 'true' }), step), { title: 'Adding your plan' });
+  try {
+    await plan.importPlan(file, (t) => (step.textContent = t));
+    await loadAll();
+    close();
+    toast(sync.status().user ? 'Plan saved. Syncing to your account.' : 'Plan saved on this phone');
+    go('#/plan');
+  } catch (e) {
+    console.error(e);
+    close();
+    toast(/password/i.test(e?.message || '') ? 'That PDF is password-protected. Save a copy without a password and try again.' : `Couldn’t read that file: ${e?.message || e}`, 'err');
+  }
+}
+
+let planUrls = null;
+function releasePlanUrls() { planUrls?.revoke(); planUrls = null; }
+
+/** Page images for the plan, filled in once they're ready. */
+function planPages() {
+  const box = h('div', { class: 'plan-pages' }, h('p', { class: 'muted' }, 'Loading pages…'));
+  const p = S.plan;
+  releasePlanUrls();
+  plan.pageUrls(p, (t) => fill(box, h('p', { class: 'muted' }, t))).then((res) => {
+    planUrls = res;
+    if (res.missing) {
+      fill(box, h('div', { class: 'card stack' },
+        h('h3', null, 'Your plan is still on its way'),
+        h('p', { class: 'muted small' }, sync.status().user
+          ? 'It was added on another phone and hasn’t downloaded yet. It needs a connection.'
+          : 'It was added on another phone. Turn on sync in Settings to bring it here.'),
+        sync.status().user ? h('button', { class: 'btn small', onclick: onSyncTap }, 'Sync now') : null));
+      return;
+    }
+    fill(box, res.urls.map((u, i) => h('button', { class: 'plan-page', 'aria-label': `Page ${i + 1} of ${res.urls.length}. Tap to zoom.`, onclick: () => zoomPage(u) },
+      h('img', { src: u, alt: `Plan page ${i + 1}`, decoding: 'async', loading: i > 1 ? 'lazy' : 'eager' }))));
+  }).catch((e) => { console.error(e); fill(box, h('p', { class: 'muted' }, `Couldn’t show the plan: ${e?.message || e}`)); });
+  return box;
+}
+
+function zoomPage(url) {
+  const close = () => { ov.remove(); document.removeEventListener('keydown', esc); };
+  const esc = (e) => e.key === 'Escape' && close();
+  const ov = h('div', { class: 'zoom-overlay', role: 'dialog', 'aria-label': 'Zoomed page' },
+    h('div', { class: 'zoom-scroll' }, h('img', { src: url, alt: 'Plan page, zoomed' })),
+    h('button', { class: 'icon-btn zoom-x', 'aria-label': 'Close', onclick: close }, '✕'));
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', esc);
+}
+
+async function sharePlan() {
+  const f = await plan.originalFile(S.plan);
+  if (!f) return toast('The file isn’t on this phone yet');
+  try {
+    if (navigator.canShare?.({ files: [f] })) { await navigator.share({ files: [f], title: S.plan.name }); return; }
+  } catch (e) { if (e?.name === 'AbortError') return; }
+  const url = URL.createObjectURL(f);
+  const a = h('a', { href: url, download: f.name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+async function viewPlan() {
+  setTitle('Plan');
+  if (!S.plan) {
+    return h('div', { class: 'page stack' },
+      h('div', { class: 'card stack' },
+        h('h3', null, 'No plan added yet'),
+        h('p', { class: 'muted small' }, 'Add your program as a PDF, or a photo or screenshot of it. It’s saved on this phone and, with sync on, on your account too.'),
+        h('button', { class: 'btn primary block', onclick: pickPlanFile }, 'Add plan')));
+  }
+  const p = S.plan;
+  return h('div', { class: 'page stack' },
+    h('div', { class: 'plan-head' },
+      h('div', { class: 'plan-title' }, h('h2', { class: 'big-title' }, p.name.replace(/\.pdf$/i, '')), h('div', { class: 'muted small' }, planMeta(p))),
+      h('div', { class: 'row gap wrap' },
+        h('button', { class: 'btn small', onclick: sharePlan }, 'Share / Save'),
+        h('button', { class: 'btn small ghost', onclick: pickPlanFile }, 'Replace'),
+        h('button', { class: 'btn small danger-ghost', onclick: async () => {
+          const ok = await confirmSheet(`Remove "${p.name}" from the app? Your workouts aren't affected.`, { ok: 'Remove', danger: true });
+          if (!ok) return;
+          releasePlanUrls();
+          await plan.removePlan();
+          await loadAll();
+          toast('Plan removed');
+          render();
+        } }, 'Remove'))),
+    h('p', { class: 'muted tiny' }, 'Tap a page to zoom in.'),
+    planPages());
+}
+
+function openPlanSheet() {
+  sheet(h('div', { class: 'stack plan-sheet' }, h('div', { class: 'muted small' }, planMeta(S.plan)), planPages()), { title: S.plan.name.replace(/\.pdf$/i, '') });
 }
 
 // ================================================================= HISTORY
@@ -1324,8 +1555,21 @@ async function viewBody() {
           h('td', null, fmtDate(toMs(p.date), { weekday: 'short', month: 'short', day: 'numeric' })),
           h('td', { class: 'num-col' }, calc.fmtNum(p.weight)),
           h('td', { class: 'num-col muted' }, calc.fmtNum(avg.find((a) => a.date === p.date)?.avg)),
-          h('td', { class: 'num-col' }, h('button', { class: 'icon-btn sm', 'aria-label': `Delete ${p.date}`, onclick: async () => { await db.remove('bodyweight', p.id); await loadAll(); render(); } }, '✕')))))))) : null,
+          h('td', { class: 'num-col' }, h('button', { class: 'icon-btn sm', 'aria-label': `Delete ${p.date}`, onclick: () => removeWeighIn(p) }, '✕')))))))) : null,
     measurementsSection());
+}
+
+async function removeWeighIn(p) {
+  const rec = S.bodyweight.find((b) => b.id === p.id) || p;
+  await db.remove('bodyweight', rec.id);
+  await loadAll();
+  render();
+  toast(`Weigh-in from ${fmtDate(Date.parse(rec.date + 'T12:00:00'), { month: 'short', day: 'numeric' })} deleted`, '', { action: { label: 'Undo', run: async () => {
+    const { deleted, _dirty, ...keep } = rec;
+    await db.put('bodyweight', keep);
+    await loadAll();
+    render();
+  } } });
 }
 
 async function shareApp() {
@@ -1370,11 +1614,11 @@ function importBackup() {
     try {
       const data = JSON.parse(await f.text());
       const n = await db.importAll(data);
-      if (!S.seeded) { await db.setMeta('seeded', true); S.seeded = true; location.replace('#/train'); }
       await loadAll();
       toast(`Imported ${n} record${n === 1 ? '' : 's'}`);
       sync.schedule(0);
-      render();
+      if (!S.seeded) { await db.setMeta('seeded', true); S.seeded = true; location.replace('#/train'); } // hashchange renders
+      else render();
     } catch (e) {
       toast(`Import failed: ${e.message || e}`, 'err');
     }
@@ -1504,6 +1748,7 @@ let updateRequested = false;
 function registerSW() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
   navigator.serviceWorker.register('./sw.js').then((reg) => {
+    if (!reg) return;
     const promptUpdate = (worker) => {
       if (document.querySelector('.update-bar')) return;
       const bar = h('div', { class: 'update-bar' }, 'Update ready', h('button', { class: 'btn small', onclick: async () => { await flushCurrent(); updateRequested = true; worker.postMessage('skipWaiting'); } }, 'Reload'));

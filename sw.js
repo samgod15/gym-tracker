@@ -1,11 +1,11 @@
 // Offline shell. Serves the app from cache instantly, refreshes files in the background
 // (so edits you upload to GitHub show up on the next launch). Firebase calls go straight to the network.
-const CACHE = 'gym-tracker-v1.4.0';
+const CACHE = 'gym-tracker-v1.5.0';
 const FONT_CACHE = 'gym-tracker-fonts';
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/db.js', './js/calc.js', './js/ui.js', './js/timer.js', './js/charts.js',
-  './js/sync.js', './js/seed.js', './js/fx.js', './js/install.js', './js/body.js', './js/firebase-config.js',
+  './js/sync.js', './js/seed.js', './js/fx.js', './js/install.js', './js/body.js', './js/plan.js', './js/firebase-config.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png',
 ];
 

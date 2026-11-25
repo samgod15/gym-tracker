@@ -547,3 +547,49 @@ input[type="date"] { -webkit-appearance: none; appearance: none; }
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .spotlight { animation: none; }
 }
+
+/* ------------------------------------------------------------ removing sets and exercises */
+.entry-title-row { display: flex; align-items: center; gap: 8px; }
+.entry-title-row .entry-name { flex: 1; min-width: 0; }
+.entry-remove { flex: none; color: var(--muted); }
+.ico { display: inline-flex; }
+.ico svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chip-btn.minus { border-style: solid; border-color: rgba(255, 110, 110, .35); color: #ffb3b3; }
+.swipe-wrap { position: relative; }
+.swipe-wrap > .set-grid { touch-action: pan-y; z-index: 1; will-change: transform; }
+.swipe-del {
+  position: absolute; top: 3px; bottom: 3px; right: 2px; width: 84px; z-index: 0; opacity: 0;
+  border: 0; border-radius: var(--r-md); background: var(--crit, #e5484d); color: #fff; font-weight: 700; font-size: 15px;
+}
+.swipe-wrap:not(.swiping) .swipe-del { pointer-events: none; }
+.swipe-hint { padding: 6px 4px 0; }
+.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; padding: 8px 8px 8px 16px; }
+.toast-action { border: 0; background: var(--chalk); color: var(--night, #0b0f17); font-weight: 800; border-radius: 11px; padding: 8px 14px; font-size: 15px; }
+.card.entry { overflow: hidden; }
+.toast.has-action { white-space: nowrap; }
+
+/* ------------------------------------------------------------ training plan */
+.plan-card { display: flex; align-items: center; gap: 12px; text-align: left; width: 100%; color: inherit; font: inherit; }
+.plan-card .plan-ico { flex: none; width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: rgba(var(--accent-rgb), .16); color: var(--plate-blue-hi, var(--plate-blue)); }
+.plan-card .plan-ico svg { width: 22px; height: 22px; }
+.plan-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ellip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.wrap { flex-wrap: wrap; }
+.plan-head { display: flex; flex-direction: column; gap: 12px; }
+.plan-title .big-title { overflow-wrap: anywhere; }
+.plan-pages { display: flex; flex-direction: column; gap: 12px; }
+.plan-page { display: block; padding: 0; border: 0; background: #fff; border-radius: var(--r-md); overflow: hidden; box-shadow: 0 10px 30px -14px rgba(0, 0, 0, .8); }
+.plan-page img { display: block; width: 100%; height: auto; }
+.plan-sheet .plan-pages { max-height: none; }
+.plan-progress { align-items: center; text-align: center; padding: 10px 0 18px; }
+.spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--steel-3); border-top-color: var(--plate-blue); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.zoom-overlay { position: fixed; inset: 0; z-index: 80; background: #000; }
+.zoom-scroll { position: absolute; inset: 0; overflow: auto; -webkit-overflow-scrolling: touch; padding: calc(var(--sat) + 60px) 0 30px; }
+.zoom-scroll img { display: block; width: 220%; max-width: none; height: auto; background: #fff; }
+.zoom-x { position: fixed; top: calc(var(--sat) + 12px); right: 14px; z-index: 81; background: rgba(30, 30, 30, .85); color: #fff; border-color: rgba(255, 255, 255, .25); }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.plan-card .card-title { font-size: 20px; }
+.plan-card > .btn { flex: none; }
+.plan-card.empty { align-items: flex-start; }
+.plan-card.empty > .btn { align-self: center; }

@@ -2,8 +2,8 @@
 // Every synced record carries: id, updatedAt (ms), deleted (soft delete), _dirty (1 = not yet pushed).
 
 const DB_NAME = 'gymtracker';
-const DB_VERSION = 2; // v2 adds measurements
-export const SYNCED_STORES = ['exercises', 'routines', 'workouts', 'bodyweight', 'measurements', 'settings'];
+const DB_VERSION = 3; // v2 adds measurements, v3 adds files (plan PDF record) + blobs (file bytes, this phone only)
+export const SYNCED_STORES = ['exercises', 'routines', 'workouts', 'bodyweight', 'measurements', 'settings', 'files'];
 
 let dbPromise = null;
 const listeners = new Set();
@@ -18,6 +18,7 @@ function open() {
         if (!db.objectStoreNames.contains(s)) db.createObjectStore(s, { keyPath: 'id' });
       }
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('blobs')) db.createObjectStore('blobs', { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -124,13 +125,43 @@ export async function setMeta(key, value) {
 export async function clearAll() {
   const db = await open();
   await new Promise((resolve, reject) => {
-    const t = db.transaction([...SYNCED_STORES, 'meta'], 'readwrite');
-    for (const s of [...SYNCED_STORES, 'meta']) t.objectStore(s).clear();
+    const t = db.transaction([...SYNCED_STORES, 'meta', 'blobs'], 'readwrite');
+    for (const s of [...SYNCED_STORES, 'meta', 'blobs']) t.objectStore(s).clear();
     t.oncomplete = resolve;
     t.onerror = () => reject(t.error);
   });
   emit('*');
 }
+
+// ---------- Blobs (file bytes and rendered pages; never synced as records) ----------
+// Stored as ArrayBuffer + type: plain bytes work in IndexedDB on every WebKit version.
+export async function putBlob(key, blob) {
+  const buf = await blob.arrayBuffer();
+  await tx('blobs', 'readwrite', (os) => reqP(os.put({ key, buf, type: blob.type, size: buf.byteLength, at: Date.now() })));
+}
+export async function getBlob(key) {
+  const r = await tx('blobs', 'readonly', (os) => reqP(os.get(key)));
+  return r ? new Blob([r.buf], { type: r.type || '' }) : null;
+}
+export async function blobKeys() {
+  return tx('blobs', 'readonly', (os) => reqP(os.getAllKeys()));
+}
+export async function deleteBlobs(keys) {
+  await tx('blobs', 'readwrite', (os) => Promise.all(keys.map((k) => reqP(os.delete(k)))));
+}
+
+const toB64 = async (blob) => {
+  const u8 = new Uint8Array(await blob.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+const fromB64 = (b64, type) => {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return new Blob([u8], { type });
+};
 
 /** Ask the browser not to evict our data (granted heuristically on iOS for Home Screen apps). */
 export async function requestPersistence() {
@@ -181,6 +212,12 @@ export async function saveProfile(patch) {
 export async function exportAll() {
   const data = { app: 'gym-tracker', version: 1, exportedAt: new Date().toISOString(), stores: {} };
   for (const s of SYNCED_STORES) data.stores[s] = (await all(s, { includeDeleted: true })).map(({ _dirty, ...r }) => r);
+  // The plan file itself (pages are re-made from it on import)
+  data.blobs = {};
+  for (const f of await all('files')) {
+    const b = await getBlob(`file:${f.hash}`);
+    if (b) data.blobs[`file:${f.hash}`] = { type: b.type, b64: await toB64(b) };
+  }
   return data;
 }
 
@@ -199,6 +236,9 @@ export async function importAll(data) {
     }
     await putRaw(s, toWrite, { silent: true });
     n += toWrite.length;
+  }
+  for (const [key, v] of Object.entries(data.blobs || {})) {
+    if (/^file:[0-9a-f]+$/.test(key) && v?.b64 && !(await getBlob(key))) await putBlob(key, fromB64(v.b64, v.type || 'application/pdf'));
   }
   emit('*');
   return n;

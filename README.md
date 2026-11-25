@@ -10,6 +10,7 @@ An iPhone home-screen app for logging weights, sets and reps, with PRs, progress
 - **Strength level:** Beginner to Elite for bench, squat, deadlift, OHP, RDL, leg press, pulldown, pull-ups, DB press, curls and hip thrust, scaled to your sex and bodyweight from StrengthLevel.com averages.
 - **Daily targets:** calories from Mifflin-St Jeor × activity, adjusted for your goal (lose fat, recomp, build muscle, maintain), plus protein, carbs and fat. After 2 weeks of weigh-ins it compares your real weekly rate with the goal and suggests an adjustment.
 - **Body:** bodyweight with a 7-day average, tape measurements in cm or inches, and a US Navy body-fat estimate.
+- **Your plan:** add your program as a PDF (or a photo or screenshot of it). It shows page by page on the Train tab and from the **Plan** button during a workout, works offline, and syncs to your account.
 
 ---
 
@@ -46,8 +47,11 @@ An iPhone home-screen app for logging weights, sets and reps, with PRs, progress
 | What you want | How |
 |---|---|
 | Log a set | Tap **✓**. If you leave reps blank, it uses last session's reps for that set. |
-| Warm-up / drop / delete a set | Tap the set number (1, 2, W, D) |
-| Add a warm-up or drop set | **+ Warm-up** or **+ Drop** under the exercise |
+| Warm-up / drop set type | Tap the set number (1, 2, W, D) |
+| Add a set, warm-up or drop set | **+ Set**, **+ Warm-up** or **+ Drop** under the exercise |
+| Delete a set | Swipe the set left, or tap **− Set** to remove the last one. **Undo** appears for 5 seconds. |
+| Remove an exercise from today's workout | The 🗑 next to its name (Undo appears) |
+| Add or view your plan PDF | **Train → Add plan**. During a workout, tap **Plan**. |
 | Superset, rest time, reorder, swap or remove an exercise | Tap the exercise name (⋯) |
 | Plate-loaded machines | Tap the load box, then tap plates for **one side**. Set the empty bar or sled weight under Progress → exercise → **Edit**. |
 | Stack machines without lb markings | Enter the plate or pin number. To chart in lbs, set **lbs per plate** in Edit. |
@@ -60,6 +64,7 @@ Estimated 1-rep max uses the Epley formula on working sets of 15 reps or fewer. 
 
 - **No rest alert while the phone is locked.** iPhone web apps can't schedule local notifications. The app keeps the screen awake during a workout (needs iOS 18.4 or later), flashes the timer green and beeps. The beep doesn't play when the phone is on silent.
 - **Deleting the Home Screen icon can delete the local data.** That's why sync and backups exist.
+- **Plan files up to 10 MB and 40 pages.** Sync stores the file in Firestore in 700 KB pieces, because Cloud Storage for Firebase now needs the paid Blaze plan. Firestore's free tier (1 GiB) is shared by everyone who signs in to your Firebase project.
 - The starter routines are starting points. Edit them to match your own plan.
 - Strength levels, calorie targets and body fat are estimates. Strength standards for machines vary with the machine, so leg press and pulldown levels are rough. Let your weekly weight trend decide calories.
 
@@ -82,6 +87,8 @@ js/timer.js              rest timer, wake lock, beep
 js/charts.js             progress charts
 js/fx.js                 moving backgrounds and themes
 js/install.js            Add to Home Screen help
+js/plan.js               plan PDF/photo: import, page rendering, storage
+js/vendor/pdfjs/         pdf.js 6.2 (Mozilla, Apache-2.0) for showing PDFs
 js/firebase-config.js    ← paste your Firebase config here
 sw.js                    offline support
 firestore.rules          paste into Firestore → Rules

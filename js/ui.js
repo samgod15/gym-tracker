@@ -43,16 +43,21 @@ export function svgEl(tag, attrs = {}, ...children) {
 }
 
 let toastTimer = null;
-export function toast(msg, kind = '') {
+/** Short message at the top. Pass { action: { label, run } } for a tappable button such as Undo. */
+export function toast(msg, kind = '', { action = null } = {}) {
   let el = document.getElementById('toast');
   if (!el) {
     el = h('div', { id: 'toast', role: 'status', 'aria-live': 'polite' });
     document.body.appendChild(el);
   }
-  el.className = `toast show ${kind}`;
+  const hide = () => (el.className = 'toast');
+  el.className = `toast show ${kind} ${action ? 'has-action' : ''}`;
   el.textContent = msg;
+  if (action) {
+    el.appendChild(h('button', { class: 'toast-action', onclick: () => { hide(); clearTimeout(toastTimer); action.run(); } }, action.label));
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.className = 'toast'), 2600);
+  toastTimer = setTimeout(hide, action ? 5000 : 2600);
 }
 
 /** Bottom sheet. content: Node or (close) => Node. Returns close(). */
