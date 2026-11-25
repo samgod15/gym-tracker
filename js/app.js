@@ -11,7 +11,7 @@ import * as install from './install.js';
 import * as plan from './plan.js';
 const { todayISO } = calc;
 
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.5.1';
 
 // ---------------------------------------------------------------- state
 const S = {

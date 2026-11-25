@@ -1,13 +1,12 @@
-// README step 3: replace this object with the one Firebase shows you
-// (Firebase console → Project settings → General → Your apps → Web app → "SDK setup and configuration" → Config).
-// These values are not secrets — Firestore security rules (firestore.rules) are what protect your data.
-// Leave it as-is and the app still works fully, just without cloud sync.
+// Firebase project "gym-tracker" (gym-tracker-b8c93), set up Nov 2026.
+// These values are not secrets: every Firebase web app sends them to the browser.
+// Firestore security rules (firestore.rules) are what protect each person's data.
 
 export const firebaseConfig = {
-  apiKey: 'PASTE_API_KEY_HERE',
-  authDomain: '',
-  projectId: '',
-  storageBucket: '',
-  messagingSenderId: '',
-  appId: '',
+  apiKey: 'AIzaSyCwlIrWq6x60AnaPCiJcKQXJHHUHRVTIYE',
+  authDomain: 'gym-tracker-b8c93.firebaseapp.com',
+  projectId: 'gym-tracker-b8c93',
+  storageBucket: 'gym-tracker-b8c93.firebasestorage.app',
+  messagingSenderId: '424153541260',
+  appId: '1:424153541260:web:07e33b4d4692cabe06e9a9',
 };
